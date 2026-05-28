@@ -19,8 +19,20 @@ from telegram.ext import (
 )
 
 from config import GEMINI_API_KEY, GROUP_CHAT_ID, TELEGRAM_BOT_TOKEN
-from gemini_client import analyze_product
-from scraper import build_product_payload, get_product_detail, search_products
+from cps_api import fetch_product_for_query
+from conversation import (
+    append_turn,
+    clear_session,
+    format_context_block,
+    get_session,
+)
+from gemini_client import (
+    _is_follow_up_question,
+    analyze_product,
+    extract_search_keywords,
+    needs_query_expansion,
+)
+from scraper import build_product_payload
 
 # Cấu hình logging ra console
 logging.basicConfig(
@@ -47,7 +59,10 @@ HELP_TEXT = (
     "3️⃣ Nhận câu trả lời kèm nút xem sản phẩm gốc.\n\n"
     "*Lệnh:*\n"
     "/start — Chào mừng\n"
-    "/help — Hướng dẫn\n\n"
+    "/help — Hướng dẫn\n"
+    "/clear — Xóa ngữ cảnh hội thoại\n\n"
+    "💡 Bot nhớ vài tin gần nhất trong cùng chat để hiểu câu hỏi tiếp "
+    "(vd: _còn hàng không?_ sau khi hỏi iPhone).\n\n"
     "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực tế trên website."
 )
 
@@ -129,6 +144,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Xóa ngữ cảnh hội thoại của user trong chat hiện tại."""
+    if not update.effective_chat or not update.message:
+        return
+    if not is_allowed_chat(update.effective_chat.id):
+        return
+    store = context.application.bot_data.setdefault("sessions", {})
+    user_id = update.effective_user.id if update.effective_user else None
+    clear_session(store, update.effective_chat.id, user_id)
+    await update.message.reply_text(
+        "🧹 Đã xóa ngữ cảnh hội thoại. Bạn có thể hỏi sản phẩm mới từ đầu."
+    )
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.message:
         return
@@ -176,25 +205,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not user_question:
         return
 
+    store = context.application.bot_data.setdefault("sessions", {})
+    user_id = update.effective_user.id if update.effective_user else None
+    session = get_session(store, chat_id, user_id)
+    conversation_context = format_context_block(session)
+
     status_msg = await update.message.reply_text("🔍 Đang tìm kiếm thông tin...")
 
     product_url = ""
     try:
-        # Bước 1: tìm kiếm sản phẩm
-        results = await search_products(user_question)
-        if not results:
+        # Bước 0: bóc tách từ khóa từ CÂU MỚI (context chỉ hỗ trợ hỏi tiếp ngắn)
+        kw_context = conversation_context if _is_follow_up_question(user_question) else ""
+        if needs_query_expansion(user_question):
+            await status_msg.edit_text("✍️ Đang hiểu câu hỏi của bạn...")
+        search_keywords = await asyncio.to_thread(
+            extract_search_keywords, user_question, kw_context
+        )
+        if not search_keywords:
+            await status_msg.edit_text("😔 Không hiểu được sản phẩm bạn cần tìm.")
+            return
+
+        logger.info(
+            "Tìm sản phẩm: keywords=%r | câu gốc=%r",
+            search_keywords,
+            user_question,
+        )
+
+        fallback_url = ""
+        if _is_follow_up_question(user_question):
+            last_product = session.get("last_product") or {}
+            fallback_url = last_product.get("url") or ""
+
+        # Bước 1: search / link / CPS GraphQL detail
+        await status_msg.edit_text(f"🔍 Đang tìm: _{search_keywords}_...")
+        results, detail = await fetch_product_for_query(
+            search_keywords,
+            user_message=user_question,
+            fallback_url=fallback_url,
+        )
+        if not results and not detail:
+            hint = (
+                f"\n\n_Từ khóa đã tìm: {search_keywords}_"
+                if search_keywords != user_question
+                else ""
+            )
             await status_msg.edit_text(
                 "😔 Không tìm thấy sản phẩm phù hợp trên CellphoneS.\n"
                 "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
+                f"{hint}"
             )
             return
 
-        # Bước 2: lấy chi tiết sản phẩm đầu tiên
+        # Bước 2: đã có chi tiết từ CPS API
         await status_msg.edit_text(
-            "📦 Đã tìm thấy sản phẩm. Đang lấy thông số chi tiết..."
+            "📦 Đã tìm thấy sản phẩm. Đang phân tích dữ liệu..."
         )
-        product_url = results[0].get("url", "")
-        detail = await get_product_detail(product_url) if product_url else {}
+        product_url = detail.get("url") or (results[0].get("url", "") if results else "")
         payload = build_product_payload(results, detail)
 
         # Bước 3: phân tích bằng Gemini (chạy sync trong thread pool)
@@ -203,8 +269,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             analyze_product,
             user_question,
             payload,
+            conversation_context,
         )
         answer = truncate_message(answer)
+
+        product_name = (detail.get("name") or results[0].get("name") or "").strip()
+        append_turn(
+            session,
+            user=user_question,
+            assistant=answer,
+            keywords=search_keywords,
+            product_name=product_name,
+            product_url=product_url,
+        )
 
         # Nút xem trên Cellphones
         keyboard = None
@@ -288,6 +365,7 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("chatid", cmd_chatid))
+    app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(
