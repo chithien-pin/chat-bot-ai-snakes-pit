@@ -44,3 +44,4 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+cps-nuxt-standard/
