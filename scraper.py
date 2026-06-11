@@ -7,20 +7,18 @@ import asyncio
 import logging
 import re
 from typing import Any
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
-from config import CPS_PROVINCE_ID
+from config import CPS_GRAPHQL_SEARCH_ENDPOINT, CPS_PROVINCE_ID, CPS_WEB_BASE_URL
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://cellphones.com.vn"
+BASE_URL = CPS_WEB_BASE_URL
 CDN_BASE = "https://cdn2.cellphones.com.vn"
-SEARCH_GRAPHQL_URL = (
-    "https://api.cellphones.com.vn/graphql-search/v2/graphql/query"
-)
+SEARCH_GRAPHQL_URL = CPS_GRAPHQL_SEARCH_ENDPOINT
 CATALOG_SEARCH_URL = f"{BASE_URL}/catalogsearch/result/"
 
 DEFAULT_HEADERS = {
@@ -37,6 +35,7 @@ QUICK_SEARCH_QUERY = """
 query quick_search($terms: String!, $province: Int!) {
   quick_search(user_query: { terms: $terms, province: $province }) {
     products {
+      product_id
       name
       url_path
       price
@@ -64,6 +63,16 @@ def _full_url(path: str) -> str:
     return urljoin(BASE_URL + "/", path.lstrip("/"))
 
 
+def product_url_from_record(record: dict[str, Any] | None) -> str:
+    """URL sản phẩm — luôn ưu tiên url_path từ GraphQL."""
+    if not record:
+        return ""
+    url_path = str(record.get("url_path") or "").strip()
+    if url_path:
+        return _full_url(url_path)
+    return str(record.get("url") or "").strip()
+
+
 def _thumbnail_url(path: str | None) -> str:
     if not path:
         return ""
@@ -72,6 +81,89 @@ def _thumbnail_url(path: str | None) -> str:
     if path.startswith("/"):
         return urljoin(BASE_URL, path)
     return f"{CDN_BASE}/x/media/catalog/product{path}"
+
+
+def build_catalog_search_url(query: str) -> str:
+    """
+    Link trang kết quả tìm kiếm đúng rule:
+    https://cellphones.com.vn/catalogsearch/result?q=<query_encoded>
+    """
+    q = (query or "").strip()
+    base = f"{BASE_URL}/catalogsearch/result"
+    if not q:
+        return base
+    return f"{base}?q={quote(q, safe='')}"
+
+
+def is_single_product_result(
+    search_results: list[dict[str, Any]],
+    detail: dict[str, Any] | None = None,
+) -> bool:
+    """True khi kết quả chỉ trỏ về một sản phẩm cụ thể."""
+    if len(search_results) <= 1:
+        return True
+
+    product_ids = {
+        str(item.get("product_id") or "").strip()
+        for item in search_results
+        if item.get("product_id")
+    }
+    if len(product_ids) == 1:
+        return True
+
+    urls = {
+        str(item.get("url") or "").strip()
+        for item in search_results
+        if item.get("url")
+    }
+    url_paths = {
+        str(item.get("url_path") or "").strip()
+        for item in search_results
+        if item.get("url_path")
+    }
+    if len(url_paths) == 1:
+        return True
+    if len(urls) == 1:
+        return True
+
+    detail_path = str((detail or {}).get("url_path") or "").strip()
+    if detail_path and search_results:
+        top_path = str(search_results[0].get("url_path") or "").strip()
+        if detail_path == top_path:
+            return True
+
+    detail_url = product_url_from_record(detail)
+    if detail_url and urls == {detail_url}:
+        return True
+    return False
+
+
+def build_response_link_url(
+    *,
+    search_results: list[dict[str, Any]],
+    detail: dict[str, Any],
+    search_keywords: str,
+) -> str:
+    """
+    Link đính kèm cuối tin nhắn:
+    - 1 sản phẩm → url_path trang chi tiết SP
+    - Nhiều SP → danh mục (category_url) hoặc trang search theo từ khóa
+    """
+    keywords = (search_keywords or "").strip()
+    category_url = str(detail.get("category_url") or "").strip()
+
+    if is_single_product_result(search_results, detail):
+        product_url = product_url_from_record(detail)
+        if product_url:
+            return product_url
+        if search_results:
+            first_url = product_url_from_record(search_results[0])
+            if first_url:
+                return first_url
+
+    if category_url:
+        return category_url
+    return build_catalog_search_url(keywords)
 
 
 async def _fetch_html(client: httpx.AsyncClient, url: str) -> str:
@@ -175,11 +267,13 @@ def _parse_search_fallback_html(html: str, limit: int = 8) -> list[dict[str, Any
         if len(name) < 5:
             continue
         seen.add(href)
+        path = urlparse(href).path.lstrip("/") if href.startswith("http") else href.lstrip("/")
         products.append(
             {
                 "name": name,
                 "price": "",
-                "url": _full_url(href),
+                "url_path": path,
+                "url": _full_url(path),
                 "thumbnail": "",
             }
         )
@@ -233,6 +327,7 @@ async def search_products(query: str, limit: int = 8) -> list[dict[str, Any]]:
                     {
                         "name": item.get("name", ""),
                         "price": _format_price(display),
+                        "url_path": url_path,
                         "url": _full_url(url_path),
                         "thumbnail": _thumbnail_url(item.get("thumbnail")),
                     }

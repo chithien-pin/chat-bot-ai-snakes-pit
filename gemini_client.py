@@ -8,9 +8,7 @@ import logging
 import re
 from typing import Any
 
-import google.generativeai as genai
-
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, GEMINI_MODEL, LLM_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +22,49 @@ SYSTEM_PROMPT = (
     "Khách có thể gõ viết tắt (vd: nckd = nồi chiên không dầu); hiểu theo ngữ cảnh câu hỏi."
 )
 
-# Cấu hình SDK một lần khi import
-genai.configure(api_key=GEMINI_API_KEY)
+SHOP_STOCK_PROMPT_ADDON = (
+    "Tồn kho: online_stock.stock_status / stock_quantity = tồn online; "
+    "shop_stock = cửa hàng theo tỉnh (total_shops_in_province, shops[].address/phone). "
+    "Nếu online_stock báo 'Còn hàng' hoặc stock_quantity > 0 → SP còn tồn online. "
+    "Nếu shop_stock.total_shops_in_province > 0 → nêu số cửa hàng và 2–3 địa chỉ mẫu. "
+    "KHÔNG nói 'không có tồn' khi dữ liệu đã báo còn hàng. "
+    "Nếu khách hỏi khu vực cụ thể mà matched_shops_count = 0, nói rõ không khớp địa chỉ. "
+    "Không bịa số lượng tồn từng shop."
+)
 
-# Thứ tự thử model (đã kiểm tra 2026-05: 1.5 = 404, 2.0/3.5 = hay 429)
+MEMBER_PRICE_PROMPT_ADDON = (
+    "Trong primary_product: price = giá bán (prices.special), old_price = giá gốc (prices.root) nếu cao hơn. "
+    "member_prices gồm S-New/S-Member/S-Vip (và HSSV/Giáo viên nếu có). "
+    "promotions gồm km_chung, km_rieng, highlights (promotion_info + promotion_information). "
+    "stock_status và stock_quantity = tồn online. "
+    "Khi khách hỏi giá: nêu price và old_price, liệt kê đủ member_prices, tóm tắt KM chính. "
+    "Luôn nêu stock_status nếu có. Không bịa hạng thành viên hoặc quà tặng không có trong dữ liệu."
+)
+
+PRODUCT_DATA_PROMPT_ADDON = (
+    "Luôn dùng đủ các trường trong primary_product và shop_stock (nếu có). "
+    "Không bỏ qua member_prices, promotions, stock_status dù khách chỉ hỏi giá."
+)
+
+# Client google-genai (lazy) — thay google.generativeai đã deprecated
+_genai_client: Any = None
+
+
+def _ensure_genai_client() -> Any:
+    global _genai_client
+    if _genai_client is None:
+        from google import genai
+
+        _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _genai_client
+
+# Thứ tự thử model: 3.5 Flash (mới nhất) → rẻ hơn nếu 429/quota
 MODEL_FALLBACKS = (
     GEMINI_MODEL,
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
 )
 
 # Gợi ý tên sản phẩm đầy đủ — bỏ qua bước chuẩn hóa nếu đã rõ
@@ -58,6 +89,29 @@ _QUESTION_NOISE_RE = re.compile(
     r"tư vấn|tu van|cho mình|giúp mình|xin|ạ"
     r")\b",
     re.IGNORECASE,
+)
+_SEARCH_PREFIX_RE = re.compile(
+    r"^(?:giá|gia|báo giá|bao gia|cho hỏi|cho hoi|xin giá|xin gia)\s+",
+    re.IGNORECASE,
+)
+_SHOP_INQUIRY_SUFFIX_RE = re.compile(
+    r"\s+(?:"
+    r"có hàng ở cửa hàng nào|còn hàng ở cửa hàng nào|"
+    r"ở cửa hàng nào|o cua hang nao|"
+    r"có ở cửa hàng|còn ở cửa hàng|co o cua hang|con o cua hang|"
+    r"cửa hàng nào(?: còn| có)?|cua hang nao(?: con| co)?|"
+    r"chi nhánh nào(?: còn| có)?|chi nhanh nao(?: con| co)?|"
+    r"shop nào(?: còn| có)?|shop nao(?: con| co)?|"
+    r"ở đâu còn|o dau con|hàng ở đâu|hang o dau|"
+    r"gần nhất|gan nhat"
+    r").*$",
+    re.IGNORECASE,
+)
+_SEARCH_NOISE_HINTS = (
+    "giá ", "gia ", "báo giá", "bao gia",
+    "cửa hàng", "cua hang", "chi nhánh", "chi nhanh",
+    "shop nào", "shop nao", "có hàng", "co hang", "còn hàng", "con hang",
+    "ở đâu", "o dau", "gần ", "gan ", "bao nhiêu", "bao nhieu",
 )
 _TRAILING_QUESTION_RE = re.compile(
     r"\s+(có không|còn hàng không|giá bao nhiêu|bao nhiêu tiền)\s*\??\s*$",
@@ -100,6 +154,8 @@ Quy tắc:
 Ví dụ:
 - "nckd bear có không?" → nồi chiên không dầu Bear
 - "ip 15 pm giá bn" → iPhone 15 Pro Max
+- "Giá iphone 16 plus" → iPhone 16 Plus
+- "iphone 15 pro có hàng ở cửa hàng nào?" → iPhone 15 Pro
 - "tư vấn laptop gaming 20 triệu" → laptop gaming
 - Nếu câu mới là hỏi tiếp (vd: "còn hàng không", "giá sao", "cái đó") → dùng ngữ cảnh để giữ đúng sản phẩm"""
 
@@ -109,22 +165,90 @@ def _serialize_product_data(product_data: dict[str, Any]) -> str:
     return json.dumps(product_data, ensure_ascii=False, indent=2)
 
 
-def _generate_with_fallback(prompt: str) -> str | None:
-    """Gọi Gemini, thử lần lượt các model trong MODEL_FALLBACKS."""
+def _build_analysis_prompt(
+    user_question: str,
+    product_data: dict[str, Any],
+    conversation_context: str = "",
+) -> str:
+    context_section = f"{conversation_context}\n\n" if conversation_context else ""
+    shop_stock = product_data.get("shop_stock")
+    online_stock = product_data.get("online_stock")
+    primary = product_data.get("primary_product") or {}
+    system = SYSTEM_PROMPT
+    if shop_stock or online_stock or primary.get("stock_status"):
+        system = f"{system}\n{SHOP_STOCK_PROMPT_ADDON}"
+    if (
+        primary.get("member_prices")
+        or primary.get("promotions")
+        or primary.get("promotion_info")
+        or primary.get("stock_status")
+    ):
+        system = f"{system}\n{MEMBER_PRICE_PROMPT_ADDON}"
+    system = f"{system}\n{PRODUCT_DATA_PROMPT_ADDON}"
+    return (
+        f"{system}\n\n"
+        f"{context_section}"
+        f"=== DỮ LIỆU SẢN PHẨM ===\n{_serialize_product_data(product_data)}\n\n"
+        f"=== CÂU HỎI KHÁCH HÀNG (mới nhất) ===\n{user_question}\n\n"
+        "Hãy trả lời theo ngữ cảnh hội thoại (nếu khách hỏi tiếp về cùng sản phẩm):"
+    )
+
+
+def _extract_usage(response: Any) -> dict[str, int]:
+    usage = getattr(response, "usage_metadata", None)
+    if not usage:
+        return {}
+    prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+    completion_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+    total_tokens = int(getattr(usage, "total_token_count", 0) or 0)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _llm_provider_label() -> str:
+    return "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini"
+
+
+def _generate_deepseek_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
+    from deepseek_client import generate_chat
+
+    return generate_chat(prompt)
+
+
+def _generate_with_fallback_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
+    """Gọi LLM (Gemini hoặc DeepSeek); trả text + metadata usage."""
+    if LLM_PROVIDER == "deepseek":
+        return _generate_deepseek_meta(prompt)
+
     tried: list[str] = []
+    client = _ensure_genai_client()
     for model_name in MODEL_FALLBACKS:
         if not model_name or model_name in tried:
             continue
         tried.append(model_name)
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
             text = (response.text or "").strip()
             if text:
-                return text
+                return text, {
+                    "model": model_name,
+                    **_extract_usage(response),
+                }
         except Exception as exc:
             logger.warning("Model %s lỗi: %s", model_name, exc)
-    return None
+    return None, {}
+
+
+def _generate_with_fallback(prompt: str) -> str | None:
+    """Giữ API cũ: chỉ trả text."""
+    text, _ = _generate_with_fallback_meta(prompt)
+    return text
 
 
 def _tokenize_words(text: str) -> list[str]:
@@ -155,6 +279,27 @@ def _strip_question_noise(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _has_search_noise(text: str) -> bool:
+    """Câu còn cụm hỏi giá/tồn/cửa hàng — không nên gửi thẳng API search."""
+    lower = (text or "").strip().lower()
+    if not lower:
+        return False
+    if _SEARCH_PREFIX_RE.match(lower):
+        return True
+    if _SHOP_INQUIRY_SUFFIX_RE.search(lower):
+        return True
+    return any(h in lower for h in _SEARCH_NOISE_HINTS)
+
+
+def _strip_search_noise(text: str) -> str:
+    """Bóc prefix giá / suffix hỏi tồn cửa hàng — chỉ giữ tên sản phẩm."""
+    cleaned = (text or "").strip().rstrip("?").strip()
+    cleaned = _SEARCH_PREFIX_RE.sub("", cleaned)
+    cleaned = _SHOP_INQUIRY_SUFFIX_RE.sub("", cleaned)
+    cleaned = _strip_question_noise(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _strip_usage_context(text: str) -> str:
     """Bỏ mô tả nhu cầu — chỉ giữ tên SP cho API CellphoneS."""
     cleaned = _USAGE_CONTEXT_RE.sub(" ", text)
@@ -173,6 +318,8 @@ def needs_query_expansion(text: str) -> bool:
         return True
 
     lower = t.lower()
+    if _has_search_noise(t):
+        return True
     if any(h in lower for h in _PRODUCT_HINTS):
         return False
     if re.search(r"\d", t):
@@ -191,7 +338,8 @@ def needs_query_expansion(text: str) -> bool:
 def _normalize_keyword_line(text: str) -> str:
     """Một dòng từ khóa sạch cho API search."""
     line = text.strip().strip("\"'`").split("\n")[0].strip()
-    return _strip_question_noise(line) or line
+    line = _strip_search_noise(line)
+    return line
 
 
 def _is_follow_up_question(text: str) -> bool:
@@ -202,7 +350,7 @@ def _is_follow_up_question(text: str) -> bool:
     t = text.strip().lower()
     if _has_abbrev_tokens(text):
         return False
-    if len(t) > 40 or len(t.split()) > 6:
+    if len(t) > 55 or len(t.split()) > 8:
         return False
     if any(h in t for h in _PRODUCT_HINTS):
         return False
@@ -211,8 +359,68 @@ def _is_follow_up_question(text: str) -> bool:
         "còn hàng", "con hang", "có không", "co khong", "giá sao", "gia sao",
         "bao nhiêu", "bn tiền", "cái đó", "cai do", "thế nào", "the nao",
         "so với", "rẻ hơn", "đắt hơn",
+        "quà tặng", "qua tang", "khuyến mãi", "khuyen mai", "ưu đãi", "uu dai",
+        "tặng gì", "tang gi", "có gì", "co gi", "trả góp", "tra gop",
+        "bảo hành", "bao hanh", "đủ không", "du khong", "phù hợp", "phu hop",
+        "nên mua", "nen mua", "giảm giá", "giam gia", "pmh", "voucher",
     )
     return any(p in t for p in follow_patterns)
+
+
+def _context_has_product(conversation_context: str) -> bool:
+    ctx = conversation_context or ""
+    return (
+        "Sản phẩm đang thảo luận:" in ctx
+        or "Từ khóa tìm gần nhất:" in ctx
+    )
+
+
+def is_contextual_follow_up(
+    text: str,
+    conversation_context: str = "",
+) -> bool:
+    """
+    Câu hỏi tiếp trong cùng chủ đề SP (kể cả hỏi quà tặng/KM mà không nhắc tên SP).
+    """
+    if not _context_has_product(conversation_context):
+        return False
+    if _is_follow_up_question(text):
+        return True
+
+    t = text.strip().lower()
+    if _has_abbrev_tokens(text):
+        return False
+    if any(h in t for h in _PRODUCT_HINTS):
+        return False
+    if len(t) > 60:
+        return False
+
+    # Câu ngắn hỏi thêm về SP đang thảo luận (không chứa tên SP mới)
+    question_markers = ("không", "khong", "gì", "gi", "sao", "nào", "nao", "?")
+    if len(t.split()) <= 10 and any(m in t for m in question_markers):
+        return True
+    return False
+
+
+def _reuse_keywords_from_context(
+    original: str,
+    conversation_context: str,
+) -> str | None:
+    keywords = ""
+    product_name = ""
+    for line in conversation_context.splitlines():
+        if line.startswith("Từ khóa tìm gần nhất:"):
+            keywords = line.split(":", 1)[1].strip()
+        elif line.startswith("Sản phẩm đang thảo luận:"):
+            product_name = line.split(":", 1)[1].strip()
+
+    if keywords:
+        logger.info("Từ khóa (ngữ cảnh): %r → %r", original, keywords)
+        return keywords
+    if product_name:
+        logger.info("Từ khóa (SP ngữ cảnh): %r → %r", original, product_name)
+        return product_name
+    return None
 
 
 def extract_search_keywords(
@@ -228,24 +436,14 @@ def extract_search_keywords(
 
     # Bước 1: luôn bóc từ khóa từ CÂU MỚI trước (không ưu tiên context)
     local_keywords = _normalize_keyword_line(
-        _strip_usage_context(
-            _strip_question_noise(_replace_abbrev_tokens(original))
-        )
+        _strip_usage_context(_replace_abbrev_tokens(original))
     )
 
-    # Chỉ hỏi tiếp ngắn mới dùng từ khóa cũ (sau khi đã xác nhận không phải câu mới)
-    if conversation_context and _is_follow_up_question(original):
-        for line in conversation_context.splitlines():
-            if line.startswith("Từ khóa tìm gần nhất:"):
-                prev = line.split(":", 1)[1].strip()
-                if prev:
-                    logger.info("Từ khóa (hỏi tiếp): %r → %r", original, prev)
-                    return prev
-            if line.startswith("Sản phẩm đang thảo luận:"):
-                prev = line.split(":", 1)[1].strip()
-                if prev:
-                    logger.info("Từ khóa (hỏi tiếp SP): %r → %r", original, prev)
-                    return prev
+    # Hỏi tiếp trong cùng chủ đề → giữ từ khóa / SP cũ, không search lại bừa
+    if conversation_context and is_contextual_follow_up(original, conversation_context):
+        reused = _reuse_keywords_from_context(original, conversation_context)
+        if reused:
+            return reused
 
     if _has_abbrev_tokens(original) and local_keywords:
         logger.info("Từ khóa (từ điển): %r → %r", original, local_keywords)
@@ -257,12 +455,16 @@ def extract_search_keywords(
         logger.info("Từ khóa (map cả câu): %r → %r", original, keywords)
         return keywords
 
+    if local_keywords and not _has_search_noise(local_keywords):
+        logger.info("Từ khóa (bóc cục bộ): %r → %r", original, local_keywords)
+        return local_keywords
+
     if not needs_query_expansion(original):
-        keywords = _normalize_keyword_line(original)
+        keywords = local_keywords or _normalize_keyword_line(original)
         logger.info("Từ khóa (câu rõ): %r → %r", original, keywords)
         return keywords
 
-    # Bước 2: Gemini chỉ trích từ khóa (không câu hỏi đầy đủ)
+    # Bước 2: Gemini trích từ khóa khi bóc cục bộ chưa đủ
     ctx = f"{conversation_context}\n\n" if conversation_context else ""
     prompt = EXTRACT_KEYWORDS_PROMPT.format(
         context_block=ctx,
@@ -272,11 +474,12 @@ def extract_search_keywords(
     if extracted:
         keywords = _normalize_keyword_line(extracted)
         if keywords:
-            logger.info("Từ khóa (Gemini): %r → %r", original, keywords)
+            logger.info("Từ khóa (%s): %r → %r", _llm_provider_label(), original, keywords)
             return keywords
 
     logger.warning(
-        "Gemini không trích được từ khóa, dùng bản cục bộ: %r → %r",
+        "%s không trích được từ khóa, dùng bản cục bộ: %r → %r",
+        _llm_provider_label(),
         original,
         local_keywords,
     )
@@ -304,23 +507,39 @@ def analyze_product(
     Gọi Gemini với system prompt + dữ liệu sản phẩm + câu hỏi người dùng.
     """
     user_question = user_question.strip()
-    data_text = _serialize_product_data(product_data)
+    prompt = _build_analysis_prompt(user_question, product_data, conversation_context)
 
-    context_section = f"{conversation_context}\n\n" if conversation_context else ""
-    prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"{context_section}"
-        f"=== DỮ LIỆU SẢN PHẨM ===\n{data_text}\n\n"
-        f"=== CÂU HỎI KHÁCH HÀNG (mới nhất) ===\n{user_question}\n\n"
-        "Hãy trả lời theo ngữ cảnh hội thoại (nếu khách hỏi tiếp về cùng sản phẩm):"
-    )
-
-    text = _generate_with_fallback(prompt)
+    text, _ = _generate_with_fallback_meta(prompt)
     if text:
         return text
 
-    logger.error("Lỗi gọi Gemini phân tích sản phẩm")
+    label = _llm_provider_label()
+    logger.error("Lỗi gọi %s phân tích sản phẩm", label)
     return (
-        "⚠️ Không thể kết nối Gemini lúc này. "
+        f"⚠️ Không thể kết nối {label} lúc này. "
         "Vui lòng thử lại sau ít phút."
+    )
+
+
+def analyze_product_with_meta(
+    user_question: str,
+    product_data: dict[str, Any],
+    conversation_context: str = "",
+) -> tuple[str, dict[str, Any]]:
+    """
+    Trả về (answer, metadata) để đo token/ model cho metrics.
+    """
+    user_question = user_question.strip()
+    prompt = _build_analysis_prompt(user_question, product_data, conversation_context)
+
+    text, meta = _generate_with_fallback_meta(prompt)
+    if text:
+        return text, meta
+
+    label = _llm_provider_label()
+    logger.error("Lỗi gọi %s phân tích sản phẩm", label)
+    return (
+        f"⚠️ Không thể kết nối {label} lúc này. "
+        "Vui lòng thử lại sau ít phút.",
+        meta,
     )

@@ -5,34 +5,47 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import sys
 import re
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-from config import GEMINI_API_KEY, GROUP_CHAT_ID, TELEGRAM_BOT_TOKEN
-from cps_api import fetch_product_for_query
+from config import GEMINI_API_KEY, GROUP_CHAT_ID, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
+from cps_api import attach_shop_stock_to_payload, fetch_product_for_query
 from conversation import (
     append_turn,
     clear_session,
     format_context_block,
     get_session,
 )
+from feedback import (
+    FEEDBACK_HELPFUL,
+    FEEDBACK_NOT_HELPFUL,
+    TELEGRAM_CB_ACK,
+    TELEGRAM_CB_HELPFUL,
+    TELEGRAM_CB_NOT_HELPFUL,
+    build_telegram_feedback_ack_keyboard,
+    build_telegram_feedback_keyboard,
+    record_message_feedback,
+)
 from gemini_client import (
-    _is_follow_up_question,
-    analyze_product,
+    analyze_product_with_meta,
     extract_search_keywords,
+    is_contextual_follow_up,
     needs_query_expansion,
 )
-from scraper import build_product_payload
+from metrics import emit_metric
+from scraper import build_product_payload, build_response_link_url, product_url_from_record
 
 # Cấu hình logging ra console
 logging.basicConfig(
@@ -49,7 +62,9 @@ WELCOME_TEXT = (
     "💬 Hãy hỏi tôi, ví dụ:\n"
     "• _iPhone 15 Pro Max giá bao nhiêu?_\n"
     "• _Laptop gaming dưới 20 triệu_\n"
-    "• _Samsung Galaxy S25 có còn hàng không?_\n\n"
+    "• _Samsung Galaxy S25 có còn hàng không?_\n"
+    "• _iPhone 16 Pro còn hàng ở cửa hàng nào?_\n"
+    "• _Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?_\n\n"
     "Gõ /help để xem hướng dẫn."
 )
 HELP_TEXT = (
@@ -63,6 +78,8 @@ HELP_TEXT = (
     "/clear — Xóa ngữ cảnh hội thoại\n\n"
     "💡 Bot nhớ vài tin gần nhất trong cùng chat để hiểu câu hỏi tiếp "
     "(vd: _còn hàng không?_ sau khi hỏi iPhone).\n\n"
+    "🏪 *Kiểm tra tồn cửa hàng:* hỏi shop/chi nhánh còn hàng hoặc gần địa chỉ "
+    "(vd: _Gần Nguyễn Trãi shop nào còn Samsung S25?_).\n\n"
     "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực tế trên website."
 )
 
@@ -152,7 +169,9 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     store = context.application.bot_data.setdefault("sessions", {})
     user_id = update.effective_user.id if update.effective_user else None
-    clear_session(store, update.effective_chat.id, user_id)
+    thread_id = getattr(update.message, "message_thread_id", None)
+    thread_key = f"thread:{thread_id}" if thread_id else None
+    clear_session(store, update.effective_chat.id, user_id, thread_key=thread_key)
     await update.message.reply_text(
         "🧹 Đã xóa ngữ cảnh hội thoại. Bạn có thể hỏi sản phẩm mới từ đầu."
     )
@@ -207,22 +226,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     store = context.application.bot_data.setdefault("sessions", {})
     user_id = update.effective_user.id if update.effective_user else None
-    session = get_session(store, chat_id, user_id)
+    thread_id = getattr(update.message, "message_thread_id", None)
+    thread_key = f"thread:{thread_id}" if thread_id else None
+    session = get_session(store, chat_id, user_id, thread_key=thread_key)
     conversation_context = format_context_block(session)
+    is_follow_up = is_contextual_follow_up(user_question, conversation_context)
+    started = time.perf_counter()
+    metric_data: dict[str, object] = {
+        "platform": "telegram",
+        "chat_id": str(chat_id),
+        "user_id": str(user_id or ""),
+        "is_follow_up": is_follow_up,
+        "question_len": len(user_question),
+    }
 
     status_msg = await update.message.reply_text("🔍 Đang tìm kiếm thông tin...")
 
     product_url = ""
+    response_link_url = ""
     try:
         # Bước 0: bóc tách từ khóa từ CÂU MỚI (context chỉ hỗ trợ hỏi tiếp ngắn)
-        kw_context = conversation_context if _is_follow_up_question(user_question) else ""
+        t0 = time.perf_counter()
+        kw_context = conversation_context if is_follow_up else ""
         if needs_query_expansion(user_question):
             await status_msg.edit_text("✍️ Đang hiểu câu hỏi của bạn...")
         search_keywords = await asyncio.to_thread(
             extract_search_keywords, user_question, kw_context
         )
+        metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         if not search_keywords:
             await status_msg.edit_text("😔 Không hiểu được sản phẩm bạn cần tìm.")
+            metric_data["status"] = "keyword_empty"
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         logger.info(
@@ -232,17 +271,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
         fallback_url = ""
-        if _is_follow_up_question(user_question):
+        if is_follow_up:
             last_product = session.get("last_product") or {}
             fallback_url = last_product.get("url") or ""
 
         # Bước 1: search / link / CPS GraphQL detail
         await status_msg.edit_text(f"🔍 Đang tìm: _{search_keywords}_...")
-        results, detail = await fetch_product_for_query(
+        t1 = time.perf_counter()
+        results, detail, fetch_stats = await fetch_product_for_query(
             search_keywords,
             user_message=user_question,
             fallback_url=fallback_url,
         )
+        metric_data["latency_fetch_ms"] = int((time.perf_counter() - t1) * 1000)
+        metric_data.update(fetch_stats)
         if not results and not detail:
             hint = (
                 f"\n\n_Từ khóa đã tìm: {search_keywords}_"
@@ -254,23 +296,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
                 f"{hint}"
             )
+            metric_data["status"] = "not_found"
+            metric_data["search_keywords"] = search_keywords
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         # Bước 2: đã có chi tiết từ CPS API
         await status_msg.edit_text(
             "📦 Đã tìm thấy sản phẩm. Đang phân tích dữ liệu..."
         )
-        product_url = detail.get("url") or (results[0].get("url", "") if results else "")
+        product_url = product_url_from_record(detail) or (
+            product_url_from_record(results[0]) if results else ""
+        )
         payload = build_product_payload(results, detail)
+        response_link_url = build_response_link_url(
+            search_results=results,
+            detail=detail,
+            search_keywords=search_keywords,
+        )
+
+        if detail.get("product_id"):
+            await status_msg.edit_text("🏪 Đang kiểm tra tồn cửa hàng...")
+        shop_ctx = await attach_shop_stock_to_payload(
+            payload, detail, user_question=user_question
+        )
+        if shop_ctx:
+            metric_data["shop_stock_scenario"] = True
+            metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
 
         # Bước 3: phân tích bằng Gemini (chạy sync trong thread pool)
-        await status_msg.edit_text("🤖 Đang phân tích với Gemini AI...")
-        answer = await asyncio.to_thread(
-            analyze_product,
+        llm_label = "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini AI"
+        await status_msg.edit_text(f"🤖 Đang phân tích với {llm_label}...")
+        t2 = time.perf_counter()
+        answer, gemini_meta = await asyncio.to_thread(
+            analyze_product_with_meta,
             user_question,
             payload,
             conversation_context,
         )
+        metric_data["latency_gemini_ms"] = int((time.perf_counter() - t2) * 1000)
+        if gemini_meta:
+            metric_data.update(
+                {
+                    "gemini_model": gemini_meta.get("model", ""),
+                    "prompt_tokens": int(gemini_meta.get("prompt_tokens", 0) or 0),
+                    "completion_tokens": int(gemini_meta.get("completion_tokens", 0) or 0),
+                    "total_tokens": int(gemini_meta.get("total_tokens", 0) or 0),
+                }
+            )
         answer = truncate_message(answer)
 
         product_name = (detail.get("name") or results[0].get("name") or "").strip()
@@ -283,19 +360,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             product_url=product_url,
         )
 
-        # Nút xem trên Cellphones
-        keyboard = None
-        if product_url:
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔗 Xem trên Cellphones",
-                            url=product_url,
-                        )
-                    ]
-                ]
-            )
+        # Interactive card: đánh giá + link Cellphones
+        keyboard = build_telegram_feedback_keyboard(response_link_url)
 
         try:
             await status_msg.edit_text(
@@ -311,6 +377,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 disable_web_page_preview=True,
                 reply_markup=keyboard,
             )
+        metric_data["status"] = "success"
+        metric_data["search_keywords"] = search_keywords
+        metric_data["product_id"] = detail.get("product_id", "")
+        metric_data["product_url"] = product_url
+        metric_data["response_link_url"] = response_link_url
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     except Exception as exc:
         logger.exception("Lỗi xử lý tin nhắn: %s", exc)
@@ -325,6 +401,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(
                 "⚠️ Đã xảy ra lỗi. Vui lòng thử lại sau."
             )
+        metric_data["status"] = "error"
+        metric_data["error"] = str(exc)[:200]
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+
+async def handle_feedback_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if query.data == TELEGRAM_CB_ACK:
+        await query.answer()
+        return
+
+    if query.data not in (TELEGRAM_CB_HELPFUL, TELEGRAM_CB_NOT_HELPFUL):
+        await query.answer()
+        return
+
+    rating = (
+        FEEDBACK_HELPFUL
+        if query.data == TELEGRAM_CB_HELPFUL
+        else FEEDBACK_NOT_HELPFUL
+    )
+    chat_id = ""
+    message_id = ""
+    if query.message:
+        chat_id = _chat_id_str(query.message.chat_id)
+        message_id = str(query.message.message_id)
+    user_id = ""
+    if query.from_user:
+        user_id = _chat_id_str(query.from_user.id)
+
+    record_message_feedback(
+        platform="telegram",
+        rating=rating,
+        chat_id=chat_id,
+        user_id=user_id,
+        message_id=message_id,
+    )
+    await query.answer("Cảm ơn bạn đã đánh giá!")
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=build_telegram_feedback_ack_keyboard(),
+        )
+    except Exception:
+        pass
 
 
 def validate_config() -> None:
@@ -368,6 +497,9 @@ def main() -> None:
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(
+        CallbackQueryHandler(handle_feedback_callback, pattern=r"^fb:")
+    )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

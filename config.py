@@ -26,20 +26,81 @@ LARK_APP_SECRET = os.getenv("LARK_APP_SECRET", "").strip()
 LARK_CHAT_ID = os.getenv("LARK_CHAT_ID", "").strip()
 # lark = Lark quốc tế, feishu = Feishu Trung Quốc
 LARK_API_DOMAIN = os.getenv("LARK_API_DOMAIN", "lark").strip().lower()
+# 1 = trong topic đã @bot, trả lời tin tiếp theo không cần @ lại (cần quyền Lark)
+LARK_THREAD_AUTO_REPLY = os.getenv("LARK_THREAD_AUTO_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# Lark Base — lưu feedback từ nút card
+LARK_BITABLE_ENABLED = os.getenv("LARK_BITABLE_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LARK_BITABLE_APP_TOKEN = os.getenv("LARK_BITABLE_APP_TOKEN", "").strip()
+LARK_BITABLE_TABLE_ID = os.getenv("LARK_BITABLE_TABLE_ID", "").strip()
+# Giá trị single-select — phải khớp option trong Base
+LARK_BITABLE_CATEGORY = os.getenv("LARK_BITABLE_CATEGORY", "Bot tư vấn").strip()
+LARK_BITABLE_STATUS = os.getenv("LARK_BITABLE_STATUS", "Mới").strip()
+LARK_BITABLE_COL_TOPIC_LINK = os.getenv("LARK_BITABLE_COL_TOPIC_LINK", "Link topic").strip()
+# text = cột Text (chuỗi URL) | url = cột Hyperlink (object link+text)
+LARK_BITABLE_TOPIC_LINK_FORMAT = os.getenv(
+    "LARK_BITABLE_TOPIC_LINK_FORMAT", "text"
+).strip().lower()
+# Group nhận thông báo khi có feedback mới (chat_id dạng oc_...)
+LARK_FEEDBACK_NOTIFY_CHAT_ID = os.getenv("LARK_FEEDBACK_NOTIFY_CHAT_ID", "").strip()
 
 # Mã tỉnh/thành cho API tìm kiếm Cellphones (30 = TP.HCM)
 CPS_PROVINCE_ID = int(os.getenv("CPS_PROVINCE_ID", "30"))
 
-# GraphQL CPS — resolve URL + chi tiết sản phẩm
+# Domain web hiển thị link sản phẩm (url_path → URL đầy đủ)
+CPS_WEB_BASE_URL = os.getenv(
+    "CPS_WEB_BASE_URL",
+    "https://cellphones.com.vn",
+).strip().rstrip("/")
+
+# GraphQL CPS — resolve URL + chi tiết sản phẩm (production = dữ liệu đầy đủ)
 CPS_GRAPHQL_URL_ENDPOINT = os.getenv(
     "CPS_GRAPHQL_URL_ENDPOINT",
-    "https://api-stag.cps.onl/graphql-url/graphql/query",
+    "https://api.cellphones.com.vn/graphql-url/graphql/query",
 ).strip()
 CPS_GRAPHQL_V2_ENDPOINT = os.getenv(
     "CPS_GRAPHQL_V2_ENDPOINT",
-    "https://api-stag.cps.onl/v2/graphql/query",
+    "https://api.cellphones.com.vn/v2/graphql/query",
+).strip()
+CPS_GRAPHQL_V2_PRODUCTION = "https://api.cellphones.com.vn/v2/graphql/query"
+CPS_GRAPHQL_SEARCH_ENDPOINT = os.getenv(
+    "CPS_GRAPHQL_SEARCH_ENDPOINT",
+    "https://api.cellphones.com.vn/graphql-search/v2/graphql/query",
+).strip()
+# Tồn theo cửa hàng (shops_stock) — graphql-dashboard
+CPS_GRAPHQL_DASHBOARD_ENDPOINT = os.getenv(
+    "CPS_GRAPHQL_DASHBOARD_ENDPOINT",
+    "https://api.cellphones.com.vn/graphql-dashboard/graphql/query",
 ).strip()
 
-# Model Gemini
-# Mặc định gemini-2.5-flash (free tier ổn). 1.5 đã ngừng; 3.5 hay bị 429.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# SerpAPI Google search (site:cellphones.com.vn)
+SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
+SERPAPI_ENDPOINT = os.getenv("SERPAPI_ENDPOINT", "https://serpapi.com/search.json").strip()
+SERPAPI_FALLBACK_TO_CPS_SEARCH = os.getenv(
+    "SERPAPI_FALLBACK_TO_CPS_SEARCH",
+    "0",
+).strip() in {"1", "true", "yes", "on"}
+
+# LLM: gemini | deepseek
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+
+# Model Gemini — mặc định gemini-3.5-flash (GA, khuyến nghị production 2026-05)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+
+# DeepSeek (OpenAI-compatible) — dùng khi LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
+DEEPSEEK_BASE_URL = os.getenv(
+    "DEEPSEEK_BASE_URL",
+    "https://api.deepseek.com/v1",
+).strip()

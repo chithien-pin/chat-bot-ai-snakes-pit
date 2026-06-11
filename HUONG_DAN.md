@@ -73,7 +73,10 @@ Mở file `.env` và điền các biến sau:
 | `GEMINI_API_KEY` | Có | API key từ [Google AI Studio](https://aistudio.google.com/apikey) |
 | `GROUP_CHAT_ID` | Không* | ID group/chat bot được phép trả lời |
 | `CPS_PROVINCE_ID` | Không | Mã tỉnh CellphoneS (mặc định `30` = TP.HCM) |
-| `GEMINI_MODEL` | Không | Model Gemini (mặc định `gemini-2.0-flash`) |
+| `GEMINI_MODEL` | Không | Model Gemini (mặc định `gemini-3.5-flash`) |
+| `LLM_PROVIDER` | Không | `gemini` (mặc định) hoặc `deepseek` để test |
+| `DEEPSEEK_API_KEY` | Khi dùng DeepSeek | API key DeepSeek |
+| `DEEPSEEK_MODEL` | Không | `deepseek-chat` hoặc `deepseek-reasoner` |
 
 \* Nếu **để trống** `GROUP_CHAT_ID`, bot sẽ trả lời **mọi** chat (tin nhắn riêng hoặc group).
 
@@ -229,7 +232,7 @@ Trả lời Telegram (Markdown + nút link)
 
 ### Lỗi Gemini (404 model / quota)
 
-- Đổi `GEMINI_MODEL` trong `.env`, ví dụ: `gemini-2.0-flash` hoặc `gemini-flash-latest`
+- Đổi `GEMINI_MODEL` trong `.env`, ví dụ: `gemini-3.5-flash` (mới nhất) hoặc `gemini-3.1-flash-lite` (rẻ hơn)
 - Bot tự thử nhiều model dự phòng
 - Nếu báo **quota exceeded**: đợi vài phút hoặc kiểm tra hạn mức API key
 

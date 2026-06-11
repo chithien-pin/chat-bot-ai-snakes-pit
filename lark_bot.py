@@ -18,6 +18,7 @@ import logging
 import re
 import sys
 import threading
+import time
 from typing import Any
 
 import lark_oapi as lark
@@ -30,12 +31,31 @@ from lark_oapi.api.im.v1 import (
 
 from config import (
     GEMINI_API_KEY,
+    LLM_PROVIDER,
     LARK_API_DOMAIN,
     LARK_APP_ID,
     LARK_APP_SECRET,
     LARK_CHAT_ID,
+    LARK_THREAD_AUTO_REPLY,
 )
-from cps_api import fetch_product_for_query
+from feedback import (
+    FEEDBACK_HELPFUL,
+    build_lark_card_action_response,
+    build_lark_feedback_form_card,
+    build_lark_feedback_thanks_card,
+    build_lark_interactive_card,
+    lark_interactive_content,
+    parse_lark_feedback_payload,
+    record_message_feedback,
+)
+from lark_bitable import bitable_is_configured, save_feedback_to_bitable
+from lark_feedback_notify import build_lark_topic_link, send_feedback_admin_notification
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
+from lark_ws_patch import apply_lark_ws_card_patch
+from cps_api import attach_shop_stock_to_payload, fetch_product_for_query
 from conversation import (
     append_turn,
     clear_session,
@@ -43,12 +63,13 @@ from conversation import (
     get_session,
 )
 from gemini_client import (
-    _is_follow_up_question,
-    analyze_product,
+    analyze_product_with_meta,
     extract_search_keywords,
+    is_contextual_follow_up,
     needs_query_expansion,
 )
-from scraper import build_product_payload
+from metrics import emit_metric
+from scraper import build_product_payload, build_response_link_url, product_url_from_record
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -64,7 +85,9 @@ WELCOME_TEXT = (
     "💬 Hãy hỏi tôi, ví dụ:\n"
     "• iPhone 15 Pro Max giá bao nhiêu?\n"
     "• Laptop gaming dưới 20 triệu\n"
-    "• Samsung Galaxy S25 có còn hàng không?\n\n"
+    "• Samsung Galaxy S25 có còn hàng không?\n"
+    "• iPhone 16 Pro còn hàng ở cửa hàng nào?\n"
+    "• Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?\n\n"
     "Trong group: @bot + câu hỏi.\n"
     "Gõ /help để xem hướng dẫn."
 )
@@ -80,10 +103,13 @@ HELP_TEXT = (
     "/chatid — Lấy chat ID cho .env\n\n"
     "💡 Bot nhớ vài tin gần nhất trong cùng chat để hiểu câu hỏi tiếp "
     "(vd: còn hàng không? sau khi hỏi iPhone).\n\n"
+    "🏪 Kiểm tra tồn cửa hàng: hỏi shop/chi nhánh còn hàng hoặc gần địa chỉ.\n\n"
     "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực tế trên website."
 )
 
 _sessions: dict[str, Any] = {}
+# Topic/thread đã @bot hoặc bot đã trả lời — cho phép tin tiếp không cần @
+_active_threads: set[str] = set()
 _async_loop: asyncio.AbstractEventLoop | None = None
 _lark_client: lark.Client | None = None
 
@@ -125,6 +151,60 @@ def parse_text_content(content: str) -> str:
 def strip_mentions(text: str) -> str:
     text = re.sub(r"@_user_\d+\s*", "", text)
     return text.strip()
+
+
+def _resolve_thread_key(msg: lark.im.v1.EventMessage) -> str:
+    """Khóa topic/thread — ưu tiên thread_id, rồi root_id, rồi message_id."""
+    thread_id = (msg.thread_id or "").strip()
+    if thread_id:
+        return f"thread:{thread_id}"
+    root_id = (msg.root_id or "").strip()
+    if root_id:
+        return f"root:{root_id}"
+    message_id = (msg.message_id or "").strip()
+    return f"msg:{message_id}" if message_id else ""
+
+
+def _message_mentions_bot(msg: lark.im.v1.EventMessage) -> bool:
+    mentions = msg.mentions or []
+    if not mentions:
+        return False
+    for mention in mentions:
+        name = (mention.name or "").lower()
+        if any(
+            token in name
+            for token in ("snake", "gemini", "bot", "cellphone", "tư vấn", "tu van")
+        ):
+            return True
+    return True
+
+
+def _should_process_group_message(
+    msg: lark.im.v1.EventMessage,
+    *,
+    thread_key: str,
+) -> tuple[bool, str]:
+    """
+    Quyết định có xử lý tin nhắn group/topic.
+    Trả (should_process, reason).
+    """
+    chat_type = (msg.chat_type or "").lower()
+    if chat_type in ("p2p", "private"):
+        return True, "p2p"
+
+    if _message_mentions_bot(msg):
+        if thread_key:
+            _active_threads.add(thread_key)
+        return True, "mention"
+
+    if (
+        LARK_THREAD_AUTO_REPLY
+        and thread_key
+        and thread_key in _active_threads
+    ):
+        return True, "active_thread"
+
+    return False, "no_mention"
 
 
 def _sender_user_id(data: lark.im.v1.P2ImMessageReceiveV1) -> str | None:
@@ -176,18 +256,59 @@ class LarkMessenger:
 
     def send_final(self, text: str) -> None:
         if self.status_message_id:
-            if self._update(self.status_message_id, text):
+            if self._update(self.status_message_id, text, msg_type="text"):
                 return
         self.reply(text)
 
-    def _update(self, message_id: str, text: str) -> bool:
+    def send_final_interactive(self, card: dict[str, Any]) -> None:
+        # Lark không cho update tin text → interactive (lỗi invalid msg_type).
+        # Rút gọn tin trạng thái cũ, gửi card interactive reply mới.
+        if self.status_message_id:
+            self._update(self.status_message_id, "✅", msg_type="text")
+        self.reply_interactive(card)
+
+    def reply_interactive(self, card: dict[str, Any]) -> str:
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(self.reply_to)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("interactive")
+                .content(lark_interactive_content(card))
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            logger.error(
+                "Lark interactive reply lỗi: code=%s msg=%s",
+                response.code,
+                response.msg,
+            )
+            return ""
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return ""
+
+    def _update(
+        self,
+        message_id: str,
+        content: str,
+        *,
+        msg_type: str = "text",
+    ) -> bool:
+        if msg_type == "text":
+            body_content = text_content(content)
+        else:
+            body_content = content
         request = (
             UpdateMessageRequest.builder()
             .message_id(message_id)
             .request_body(
                 UpdateMessageRequestBody.builder()
-                .msg_type("text")
-                .content(text_content(text))
+                .msg_type(msg_type)
+                .content(body_content)
                 .build()
             )
             .build()
@@ -246,10 +367,14 @@ async def _cmd_clear(
     messenger: LarkMessenger,
     chat_id: str,
     user_id: str | None,
+    *,
+    thread_key: str | None = None,
 ) -> None:
     if not is_allowed_chat(chat_id):
         return
-    clear_session(_sessions, chat_id, user_id)
+    clear_session(_sessions, chat_id, user_id, thread_key=thread_key)
+    if thread_key:
+        _active_threads.discard(thread_key)
     messenger.reply(
         "🧹 Đã xóa ngữ cảnh hội thoại. Bạn có thể hỏi sản phẩm mới từ đầu."
     )
@@ -274,6 +399,7 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         return
 
     user_id = _sender_user_id(data)
+    thread_key = _resolve_thread_key(msg)
     raw_text = strip_mentions(parse_text_content(msg.content or ""))
     if not raw_text or not message_id:
         return
@@ -289,7 +415,20 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         elif command == "/help":
             await _cmd_help(messenger, chat_id)
         elif command == "/clear":
-            await _cmd_clear(messenger, chat_id, user_id)
+            await _cmd_clear(
+                messenger, chat_id, user_id, thread_key=thread_key or None
+            )
+        return
+
+    should_process, process_reason = _should_process_group_message(
+        msg, thread_key=thread_key
+    )
+    if not should_process:
+        logger.debug(
+            "Bỏ qua tin group không @bot — chat=%s thread=%s",
+            chat_id,
+            thread_key,
+        )
         return
 
     if not is_allowed_chat(chat_id):
@@ -305,25 +444,56 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         )
         return
 
-    logger.info("Nhận câu hỏi từ chat %s (%s)", chat_id, chat_type)
+    logger.info(
+        "Nhận câu hỏi từ chat %s (%s) thread=%s reason=%s",
+        chat_id,
+        chat_type,
+        thread_key,
+        process_reason,
+    )
     user_question = raw_text
 
-    session = get_session(_sessions, chat_id, user_id)
+    session = get_session(
+        _sessions,
+        chat_id,
+        user_id,
+        thread_key=thread_key or None,
+    )
     conversation_context = format_context_block(session)
+    is_follow_up = is_contextual_follow_up(user_question, conversation_context)
+    started = time.perf_counter()
+    metric_data: dict[str, object] = {
+        "platform": "lark",
+        "chat_id": str(chat_id),
+        "user_id": str(user_id or ""),
+        "thread_key": thread_key,
+        "process_reason": process_reason,
+        "is_follow_up": is_follow_up,
+        "question_len": len(user_question),
+    }
     messenger.update_status("🔍 Đang tìm kiếm thông tin...")
 
     product_url = ""
+    response_link_url = ""
     try:
+        t0 = time.perf_counter()
         kw_context = (
-            conversation_context if _is_follow_up_question(user_question) else ""
+            conversation_context if is_follow_up else ""
         )
         if needs_query_expansion(user_question):
             messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
         search_keywords = await asyncio.to_thread(
             extract_search_keywords, user_question, kw_context
         )
+        metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         if not search_keywords:
             messenger.send_final("😔 Không hiểu được sản phẩm bạn cần tìm.")
+            metric_data["status"] = "keyword_empty"
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         logger.info(
@@ -333,16 +503,20 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         )
 
         fallback_url = ""
-        if _is_follow_up_question(user_question):
+        if is_follow_up:
             last_product = session.get("last_product") or {}
             fallback_url = last_product.get("url") or ""
 
         messenger.update_status(f"🔍 Đang tìm: {search_keywords}...")
-        results, detail = await fetch_product_for_query(
+        response_link_url = ""
+        t1 = time.perf_counter()
+        results, detail, fetch_stats = await fetch_product_for_query(
             search_keywords,
             user_message=user_question,
             fallback_url=fallback_url,
         )
+        metric_data["latency_fetch_ms"] = int((time.perf_counter() - t1) * 1000)
+        metric_data.update(fetch_stats)
         if not results and not detail:
             hint = (
                 f"\n\nTừ khóa đã tìm: {search_keywords}"
@@ -354,24 +528,57 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
                 "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
                 f"{hint}"
             )
+            metric_data["status"] = "not_found"
+            metric_data["search_keywords"] = search_keywords
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         messenger.update_status(
             "📦 Đã tìm thấy sản phẩm. Đang phân tích dữ liệu..."
         )
-        product_url = detail.get("url") or (results[0].get("url", "") if results else "")
+        product_url = product_url_from_record(detail) or (
+            product_url_from_record(results[0]) if results else ""
+        )
         payload = build_product_payload(results, detail)
+        response_link_url = build_response_link_url(
+            search_results=results,
+            detail=detail,
+            search_keywords=search_keywords,
+        )
 
-        messenger.update_status("🤖 Đang phân tích với Gemini AI...")
-        answer = await asyncio.to_thread(
-            analyze_product,
+        if detail.get("product_id"):
+            messenger.update_status("🏪 Đang kiểm tra tồn cửa hàng...")
+        shop_ctx = await attach_shop_stock_to_payload(
+            payload, detail, user_question=user_question
+        )
+        if shop_ctx:
+            metric_data["shop_stock_scenario"] = True
+            metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
+
+        llm_label = "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini AI"
+        messenger.update_status(f"🤖 Đang phân tích với {llm_label}...")
+        t2 = time.perf_counter()
+        answer, gemini_meta = await asyncio.to_thread(
+            analyze_product_with_meta,
             user_question,
             payload,
             conversation_context,
         )
+        metric_data["latency_gemini_ms"] = int((time.perf_counter() - t2) * 1000)
+        if gemini_meta:
+            metric_data.update(
+                {
+                    "gemini_model": gemini_meta.get("model", ""),
+                    "prompt_tokens": int(gemini_meta.get("prompt_tokens", 0) or 0),
+                    "completion_tokens": int(gemini_meta.get("completion_tokens", 0) or 0),
+                    "total_tokens": int(gemini_meta.get("total_tokens", 0) or 0),
+                }
+            )
         answer = truncate_message(answer)
-        if product_url:
-            answer = f"{answer}\n\n🔗 Xem trên Cellphones: {product_url}"
 
         product_name = (detail.get("name") or results[0].get("name") or "").strip()
         append_turn(
@@ -382,7 +589,28 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
             product_name=product_name,
             product_url=product_url,
         )
-        messenger.send_final(answer)
+        thread_id_for_link = (msg.thread_id or msg.root_id or "").strip()
+        card = build_lark_interactive_card(
+            answer,
+            product_url=response_link_url,
+            question=user_question,
+            product_name=product_name,
+            thread_id=thread_id_for_link,
+            source_chat_id=chat_id,
+        )
+        messenger.send_final_interactive(card)
+        if thread_key:
+            _active_threads.add(thread_key)
+        metric_data["status"] = "success"
+        metric_data["search_keywords"] = search_keywords
+        metric_data["product_id"] = detail.get("product_id", "")
+        metric_data["product_url"] = product_url
+        metric_data["response_link_url"] = response_link_url
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
+        )
 
     except Exception as exc:
         logger.exception("Lỗi xử lý tin nhắn Lark: %s", exc)
@@ -390,6 +618,13 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
             "⚠️ Đã xảy ra lỗi khi xử lý yêu cầu.\n"
             "Vui lòng thử lại sau ít phút.\n\n"
             f"Chi tiết: {str(exc)[:200]}"
+        )
+        metric_data["status"] = "error"
+        metric_data["error"] = str(exc)[:200]
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
         )
 
 
@@ -413,6 +648,150 @@ def _schedule_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
 
 def on_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
     _schedule_message(data)
+
+
+def _persist_feedback_async(
+    *,
+    rating: str,
+    reviewer_open_id: str,
+    chat_id: str,
+    message_id: str,
+    thread_id: str,
+    question: str,
+    product_name: str,
+    product_url: str,
+    user_comment: str = "",
+) -> None:
+    """Ghi metrics + Lark Base + noti admin — không chặn card.action.trigger."""
+    record_message_feedback(
+        platform="lark",
+        rating=rating,
+        chat_id=chat_id,
+        user_id=reviewer_open_id,
+        message_id=message_id,
+        user_comment=user_comment,
+    )
+    if _lark_client is None:
+        return
+
+    topic_link = build_lark_topic_link(
+        chat_id=chat_id,
+        message_id=message_id,
+        thread_id=thread_id,
+    )
+    save_result = None
+    if bitable_is_configured():
+        save_result = save_feedback_to_bitable(
+            _lark_client,
+            rating=rating,
+            reviewer_open_id=reviewer_open_id,
+            question=question,
+            product_name=product_name,
+            product_url=product_url,
+            topic_link=topic_link,
+            user_comment=user_comment,
+        )
+
+    desc_parts: list[str] = []
+    if product_name:
+        desc_parts.append(f"Sản phẩm: {product_name}")
+    if question:
+        desc_parts.append(f"Câu hỏi: {question}")
+    if product_url:
+        desc_parts.append(f"Link SP: {product_url}")
+    if user_comment:
+        desc_parts.append(f"Ý kiến: {user_comment}")
+    description = "\n".join(desc_parts)
+    rating_label = "👍 Hữu ích" if rating == FEEDBACK_HELPFUL else "👎 Không hữu ích"
+    content = save_result.content if save_result else (user_comment or rating_label)
+    base_url = save_result.record_url if save_result else ""
+
+    send_feedback_admin_notification(
+        _lark_client,
+        reviewer_open_id=reviewer_open_id,
+        content=content,
+        description=description,
+        topic_link=topic_link,
+        base_record_url=base_url,
+    )
+
+
+def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
+    event = data.event
+    action = event.action if event else None
+    form_value = action.form_value if action else None
+    payload = parse_lark_feedback_payload(
+        action.value if action else None,
+        form_value=form_value,
+    )
+    if not payload:
+        return P2CardActionTriggerResponse()
+
+    rating = payload["rating"]
+    step = payload.get("step", "submit")
+
+    if step == "pick":
+        form_card = build_lark_feedback_form_card(
+            rating,
+            question=payload.get("question", ""),
+            product_name=payload.get("product_name", ""),
+            product_url=payload.get("product_url", ""),
+            thread_id=payload.get("thread_id", ""),
+            source_chat_id=payload.get("chat_id", ""),
+            answer_body=payload.get("answer_body", ""),
+        )
+        return P2CardActionTriggerResponse(
+            build_lark_card_action_response(card=form_card)
+        )
+
+    operator = event.operator if event else None
+    ctx = event.context if event else None
+    reviewer_open_id = (
+        (operator.open_id or operator.user_id or operator.union_id)
+        if operator
+        else ""
+    ) or ""
+    chat_id = (ctx.open_chat_id if ctx else "") or ""
+    message_id = (ctx.open_message_id if ctx else "") or ""
+    user_comment = payload.get("user_comment", "")
+
+    feedback_chat_id = payload.get("chat_id") or chat_id
+    feedback_thread_id = payload.get("thread_id") or ""
+
+    threading.Thread(
+        target=_persist_feedback_async,
+        kwargs={
+            "rating": rating,
+            "reviewer_open_id": reviewer_open_id,
+            "chat_id": feedback_chat_id,
+            "message_id": message_id,
+            "thread_id": feedback_thread_id,
+            "question": payload.get("question", ""),
+            "product_name": payload.get("product_name", ""),
+            "product_url": payload.get("product_url", ""),
+            "user_comment": user_comment,
+        },
+        name="lark-feedback-persist",
+        daemon=True,
+    ).start()
+
+    toast_text = (
+        "Cảm ơn bạn đã đánh giá 👍"
+        if rating == FEEDBACK_HELPFUL
+        else "Cảm ơn phản hồi của bạn — chúng tôi sẽ cải thiện"
+    )
+    thanks_card = build_lark_feedback_thanks_card(
+        rating,
+        user_comment,
+        answer_body=payload.get("answer_body", ""),
+    )
+    return P2CardActionTriggerResponse(
+        build_lark_card_action_response(
+            toast_type="success",
+            toast_content=toast_text,
+            card=thanks_card,
+        )
+    )
 
 
 def validate_config() -> None:
@@ -444,8 +823,10 @@ def main() -> None:
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(on_message)
+        .register_p2_card_action_trigger(on_card_action)
         .build()
     )
+    apply_lark_ws_card_patch()
 
     logger.info("Khởi động Lark bot... (Python %s)", sys.version.split()[0])
     logger.info("API domain: %s", LARK_API_DOMAIN)

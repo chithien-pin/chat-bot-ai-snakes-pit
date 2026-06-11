@@ -1,7 +1,46 @@
+# =============================================================================
+# Gitignore — ChatBotSnakePit
+# Chỉ chặn file local / bí mật / build. Toàn bộ mã nguồn .py, requirements.txt,
+# HUONG_DAN.md, .env.example … vẫn được git track bình thường.
+# =============================================================================
+
+# --- Bí mật & cấu hình local (KHÔNG đẩy) ---
 .env
-__pycache__/
-*.py[cod]
+.env.local
+.env.*.local
+
+# Mẫu env — luôn được đẩy (không chứa API key thật)
+!.env.example
+
+# --- Python virtualenv & bytecode ---
 .venv/
 venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Log & dữ liệu runtime ---
 *.log
+metrics.log
+
+# --- OS & IDE ---
 .DS_Store
+.cursor/
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Test / lint cache (nếu có sau này) ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Build artifacts ---
+dist/
+build/
+*.egg-info/
