@@ -8,6 +8,7 @@ import logging
 import time
 import sys
 import re
+from typing import Any
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -21,7 +22,11 @@ from telegram.ext import (
 )
 
 from config import GEMINI_API_KEY, GROUP_CHAT_ID, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
-from cps_api import attach_shop_stock_to_payload, fetch_product_for_query
+from cps_api import (
+    attach_shop_stock_to_payload,
+    enrich_payload_for_scenarios,
+    fetch_product_for_query,
+)
 from conversation import (
     append_turn,
     clear_session,
@@ -40,6 +45,7 @@ from feedback import (
 )
 from gemini_client import (
     analyze_product_with_meta,
+    extract_compare_product_queries,
     extract_search_keywords,
     is_contextual_follow_up,
     needs_query_expansion,
@@ -60,27 +66,31 @@ WELCOME_TEXT = (
     "Tôi là bot tư vấn sản phẩm công nghệ, lấy dữ liệu từ *CellphoneS* "
     "và phân tích bằng *Gemini AI*.\n\n"
     "💬 Hãy hỏi tôi, ví dụ:\n"
-    "• _iPhone 15 Pro Max giá bao nhiêu?_\n"
-    "• _Laptop gaming dưới 20 triệu_\n"
-    "• _Samsung Galaxy S25 có còn hàng không?_\n"
-    "• _iPhone 16 Pro còn hàng ở cửa hàng nào?_\n"
-    "• _Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?_\n\n"
+    "• _Giá iPhone 16 Pro Max 256GB hôm nay?_\n"
+    "• _SVIP/HSSV mua MacBook Air M2 giảm bao nhiêu?_\n"
+    "• _Shop còn iPhone 16 Plus 256 màu hồng không?_\n"
+    "• _Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?_\n"
+    "• _Lên đời iPhone được trợ giá thu cũ bao nhiêu?_\n"
+    "• _Trả góp Home Credit iPhone 16 trả trước thấp nhất?_\n"
+    "• _So sánh S26 Ultra và S25 Ultra_\n\n"
     "Gõ /help để xem hướng dẫn."
 )
 HELP_TEXT = (
     "📖 *Hướng dẫn sử dụng*\n\n"
     "1️⃣ Gửi câu hỏi về sản phẩm công nghệ (tiếng Việt).\n"
-    "2️⃣ Bot sẽ tìm trên cellphones.com.vn và phân tích.\n"
-    "3️⃣ Nhận câu trả lời kèm nút xem sản phẩm gốc.\n\n"
-    "*Lệnh:*\n"
-    "/start — Chào mừng\n"
-    "/help — Hướng dẫn\n"
-    "/clear — Xóa ngữ cảnh hội thoại\n\n"
-    "💡 Bot nhớ vài tin gần nhất trong cùng chat để hiểu câu hỏi tiếp "
-    "(vd: _còn hàng không?_ sau khi hỏi iPhone).\n\n"
-    "🏪 *Kiểm tra tồn cửa hàng:* hỏi shop/chi nhánh còn hàng hoặc gần địa chỉ "
-    "(vd: _Gần Nguyễn Trãi shop nào còn Samsung S25?_).\n\n"
-    "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực tế trên website."
+    "2️⃣ Bot tìm trên cellphones.com.vn và phân tích.\n"
+    "3️⃣ Nhận câu trả lời kèm link sản phẩm gốc.\n\n"
+    "*Lệnh:* /start · /help · /clear\n\n"
+    "*Bot hỗ trợ các kịch bản:*\n"
+    "💰 Giá & KM (Smember, HSSV, voucher)\n"
+    "🏪 Tồn cửa hàng / shop gần địa chỉ\n"
+    "♻️ Thu cũ đổi mới / trợ giá trade\\-in\n"
+    "💳 Trả góp \\(thông tin từ trang SP\\)\n"
+    "🛡 Bảo hành & gói BH mở rộng\n"
+    "⚖️ So sánh 2 sản phẩm\n"
+    "📋 Thông số kỹ thuật / tư vấn chọn mua\n\n"
+    "💡 Bot nhớ ngữ cảnh vài tin gần nhất \\(vd: _còn hàng không?_\\).\n\n"
+    "⚠️ Giá, tồn kho, trả góp chi tiết có thể thay đổi — xem thêm trên website."
 )
 
 
@@ -245,14 +255,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     product_url = ""
     response_link_url = ""
     try:
+        compare_queries = extract_compare_product_queries(user_question)
+
         # Bước 0: bóc tách từ khóa từ CÂU MỚI (context chỉ hỗ trợ hỏi tiếp ngắn)
         t0 = time.perf_counter()
         kw_context = conversation_context if is_follow_up else ""
-        if needs_query_expansion(user_question):
-            await status_msg.edit_text("✍️ Đang hiểu câu hỏi của bạn...")
-        search_keywords = await asyncio.to_thread(
-            extract_search_keywords, user_question, kw_context
-        )
+        if compare_queries:
+            search_keywords = compare_queries[0]
+        else:
+            if needs_query_expansion(user_question):
+                await status_msg.edit_text("✍️ Đang hiểu câu hỏi của bạn...")
+            search_keywords = await asyncio.to_thread(
+                extract_search_keywords, user_question, kw_context
+            )
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         if not search_keywords:
             await status_msg.edit_text("😔 Không hiểu được sản phẩm bạn cần tìm.")
@@ -275,16 +290,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             last_product = session.get("last_product") or {}
             fallback_url = last_product.get("url") or ""
 
-        # Bước 1: search / link / CPS GraphQL detail
+        # Bước 1: search / link / CPS GraphQL detail (hoặc so sánh 2 SP)
         await status_msg.edit_text(f"🔍 Đang tìm: _{search_keywords}_...")
         t1 = time.perf_counter()
-        results, detail, fetch_stats = await fetch_product_for_query(
-            search_keywords,
-            user_message=user_question,
-            fallback_url=fallback_url,
-        )
+        compare_products: list[dict[str, Any]] = []
+        if compare_queries:
+            await status_msg.edit_text("⚖️ Đang so sánh 2 sản phẩm...")
+            fetch_stats: dict[str, Any] = {}
+            for idx, kw in enumerate(compare_queries[:2]):
+                sub_results, sub_detail, sub_stats = await fetch_product_for_query(
+                    kw,
+                    user_message=user_question,
+                )
+                for key, val in sub_stats.items():
+                    if isinstance(val, int):
+                        fetch_stats[key] = int(fetch_stats.get(key, 0)) + val
+                    elif key == "resolve_source" and val:
+                        fetch_stats[key] = val
+                if sub_detail:
+                    compare_products.append(sub_detail)
+            results = []
+            detail = compare_products[0] if compare_products else {}
+        else:
+            results, detail, fetch_stats = await fetch_product_for_query(
+                search_keywords,
+                user_message=user_question,
+                fallback_url=fallback_url,
+            )
         metric_data["latency_fetch_ms"] = int((time.perf_counter() - t1) * 1000)
         metric_data.update(fetch_stats)
+        if compare_queries and len(compare_products) < 2:
+            await status_msg.edit_text(
+                "😔 Chưa tìm đủ 2 sản phẩm để so sánh.\n"
+                "Thử gõ rõ tên từng máy, vd: _So sánh iPhone 16 Pro Max và S25 Ultra_"
+            )
+            metric_data["status"] = "compare_not_found"
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+            return
         if not results and not detail:
             hint = (
                 f"\n\n_Từ khóa đã tìm: {search_keywords}_"
@@ -312,12 +358,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         product_url = product_url_from_record(detail) or (
             product_url_from_record(results[0]) if results else ""
         )
-        payload = build_product_payload(results, detail)
-        response_link_url = build_response_link_url(
-            search_results=results,
-            detail=detail,
-            search_keywords=search_keywords,
-        )
+        if compare_products:
+            payload = {
+                "compare_mode": True,
+                "compare_products": compare_products,
+                "primary_product": compare_products[0],
+                "search_results": [
+                    {
+                        "name": p.get("name", ""),
+                        "price": p.get("price", ""),
+                        "url": p.get("url", ""),
+                        "product_id": p.get("product_id", ""),
+                    }
+                    for p in compare_products
+                ],
+            }
+            response_link_url = product_url_from_record(compare_products[0]) or ""
+            metric_data["compare_mode"] = True
+        else:
+            payload = build_product_payload(results, detail)
+            response_link_url = build_response_link_url(
+                search_results=results,
+                detail=detail,
+                search_keywords=search_keywords,
+            )
 
         if detail.get("product_id"):
             await status_msg.edit_text("🏪 Đang kiểm tra tồn cửa hàng...")
@@ -327,6 +391,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if shop_ctx:
             metric_data["shop_stock_scenario"] = True
             metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
+
+        scenario_flags = await enrich_payload_for_scenarios(
+            payload, detail, user_question=user_question
+        )
+        if scenario_flags:
+            metric_data["scenario_enrich"] = scenario_flags
 
         # Bước 3: phân tích bằng Gemini (chạy sync trong thread pool)
         llm_label = "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini AI"

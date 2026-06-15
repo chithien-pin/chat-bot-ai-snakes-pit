@@ -46,6 +46,55 @@ PRODUCT_DATA_PROMPT_ADDON = (
     "Không bỏ qua member_prices, promotions, stock_status dù khách chỉ hỏi giá."
 )
 
+TRADE_IN_PROMPT_ADDON = (
+    "trade_promo: promo_value/pmh = trợ giá thu cũ đổi mới (tham khảo). "
+    "Chỉ nêu số liệu có trong trade_promo; không bịa giá máy cũ hay điều kiện lock/vỡ kính "
+    "nếu không có trong dữ liệu — gợi ý khách mang máy tới shop để định giá."
+)
+
+INSTALLMENT_PROMPT_ADDON = (
+    "Trả góp — dùng object installment (API payment-installment):\n"
+    "- finance_companies.best_zero_percent_packages: gói CTTC lãi 0%/tháng (Home Credit, MCredit…).\n"
+    "- finance_companies.calculated_packages: prepaid_amount, monthly_payment, term_months chính xác.\n"
+    "- lowest_zero_prepaid: trả trước thấp nhất trong gói 0% — ưu tiên khi khách hỏi 'trả trước thấp nhất'.\n"
+    "- credit_card.zero_fee_by_bank: trả góp thẻ (VIB, TCB…) qua alepay/onepay.\n"
+    "- pay_later.details.kredivo.terms: Kredivo/Fundiin/Momo.\n"
+    "Khách hỏi Home Credit / thẻ VIB / Kredivo → chỉ trả lời nhánh tương ứng. "
+    "installment.available=false → nêu reason. Không bịa số tiền."
+)
+
+WARRANTY_PROMPT_ADDON = (
+    "Bảo hành: warranty_information = BH hãng; extended_warranty.warranty_packs = gói mua thêm. "
+    "included_accessories = phụ kiện trong hộp. "
+    "Đổi trả/hoàn tiền: chỉ trả lời nếu có trong warranty_information hoặc policy_note; "
+    "không suy diễn chính sách 7 ngày/1 đổi 1 nếu thiếu dữ liệu."
+)
+
+SPECS_PROMPT_ADDON = (
+    "Thông số: dùng specifications + relation/related_name (biến thể màu/dung lượng). "
+    "Tươ thích phụ kiện: chỉ dựa relation/up_sell/included_accessories — không đoán tương thích."
+)
+
+COMPARE_PROMPT_ADDON = (
+    "Chế độ so sánh: có compare_products[] — nêu khác biệt giá, thông số chính, KM nổi bật. "
+    "Kết luận ngắn: nên chọn con nào theo nhu cầu khách (nếu hỏi tư vấn)."
+)
+
+ADVICE_PROMPT_ADDON = (
+    "Tư vấn chọn mua: gợi ý theo ngân sách/nhu cầu trong câu hỏi; "
+    "nếu chỉ có 1 SP trong dữ liệu, nêu ưu/nhược và gợi ý xem thêm danh mục trên web."
+)
+
+INCOMING_STOCK_PROMPT_ADDON = (
+    "Hàng về/đặt trước: stock_available_id=152 hoặc product_state có 'đặt'/'pre' → "
+    "nói đây là đặt trước, không có ngày về cụ thể trong API. Không bịa ETA."
+)
+
+MEMBER_TIER_HINTS = (
+    "Hạng thành viên: snull_student/snew_student/smem_student/svip_student = HSSV; "
+    "svip/smem/snew/snull = Smember. Khi khách hỏi SVIP/HSSV → chỉ nêu tier tương ứng trong member_prices."
+)
+
 # Client google-genai (lazy) — thay google.generativeai đã deprecated
 _genai_client: Any = None
 
@@ -85,7 +134,7 @@ _VIET_TONE_RE = re.compile(
 _QUESTION_NOISE_RE = re.compile(
     r"\b("
     r"có không|có hàng không|còn hàng không|co khong|con hang|"
-    r"giá bao nhiêu|bao nhiêu tiền|bn tiền|có ko|có không ạ|"
+    r"giá bao nhiêu|bao nhiêu tiền|thêm bao nhiêu|them bao nhieu|bn tiền|có ko|có không ạ|"
     r"tư vấn|tu van|cho mình|giúp mình|xin|ạ"
     r")\b",
     re.IGNORECASE,
@@ -112,9 +161,22 @@ _SEARCH_NOISE_HINTS = (
     "cửa hàng", "cua hang", "chi nhánh", "chi nhanh",
     "shop nào", "shop nao", "có hàng", "co hang", "còn hàng", "con hang",
     "ở đâu", "o dau", "gần ", "gan ", "bao nhiêu", "bao nhieu",
+    "lên đời", "len doi", "máy cũ", "may cu", "thu cũ", "thu cu",
+    "trợ giá", "tro gia", "trade-in", "trade in",
+    "gói bảo hành", "goi bao hanh", "bảo hành", "bao hanh",
 )
 _TRAILING_QUESTION_RE = re.compile(
     r"\s+(có không|còn hàng không|giá bao nhiêu|bao nhiêu tiền)\s*\??\s*$",
+    re.IGNORECASE,
+)
+_TRADE_CONTEXT_RE = re.compile(
+    r"\b(?:lên đời|len doi|từ máy cũ|tu may cu|máy cũ|may cu|"
+    r"được trợ giá|duoc tro gia|trợ giá thêm|tro gia them|trade[- ]?in)\b",
+    re.IGNORECASE,
+)
+_WARRANTY_CONTEXT_RE = re.compile(
+    r"\b(?:gói bảo hành|goi bao hanh|bảo hành vip|bao hanh vip|"
+    r"rơi vỡ|roi vo|apple care\+?|applecare)\b",
     re.IGNORECASE,
 )
 # Nhu cầu sử dụng — đưa vào câu hỏi Gemini, không gửi API search
@@ -139,25 +201,48 @@ _LOCAL_ABBREV: dict[str, str] = {
     "mb": "macbook",
     "mtb": "máy tính bảng",
     "nc": "nồi cơm điện tử",
+    "prm": "pro max",
+    "pm": "pro max",
+    "pp": "pro plus",
+    "hssv": "học sinh sinh viên",
+    "svip": "s-vip",
+    "smem": "s-member",
+    "17prm": "iphone 17 pro max",
+    "16prm": "iphone 16 pro max",
+    "s24u": "samsung galaxy s24 ultra",
+    "s25u": "samsung galaxy s25 ultra",
+    "s26u": "samsung galaxy s26 ultra",
 }
+
+_COMPARE_LEADING_RE = re.compile(
+    r"^(?:so sánh|so sanh|tư vấn|tu van|nên mua|nen mua)\s+",
+    re.IGNORECASE,
+)
+_COMPARE_SEP_RE = re.compile(
+    r"\s+(?:và|va|vs\.?|với|voi)\s+",
+    re.IGNORECASE,
+)
 
 EXTRACT_KEYWORDS_PROMPT = """Trích từ khóa tìm sản phẩm trên CellphoneS (Việt Nam) từ câu khách.
 
 {context_block}Câu khách (mới nhất): {query}
 
 Quy tắc:
-- Chỉ trả về MỘT dòng từ khóa search (danh mục + hãng + model/dung lượng nếu có).
-- KHÔNG gồm: có không, giá bao nhiêu, còn hàng, cho mình, xin, ạ, tư vấn, ...
-- Viết tắt: nckd=nồi chiên không dầu, ss=Samsung, ip=iPhone, tbnv=tai nghe bluetooth, sdp=sạc dự phòng
-- Giữ tên hãng Latin (Bear, Sony, Apple...)
+- Chỉ trả về MỘT dòng từ khóa search (danh mục + hãng + model/dung lượng/màu nếu có).
+- KHÔNG gồm: có không, giá bao nhiêu, còn hàng, trả góp, thu cũ, cho mình, xin, ạ, tư vấn, ...
+- Viết tắt: ip=iPhone, prm/pm=Pro Max, ss=Samsung, mb=Macbook, hssv=học sinh sinh viên
+- Giữ dung lượng (128gb, 256gb), màu (titan, hồng) nếu khách nêu
+- Giữ tên hãng Latin (Bear, Sony, Apple, Oppo, Xiaomi...)
 
 Ví dụ:
-- "nckd bear có không?" → nồi chiên không dầu Bear
-- "ip 15 pm giá bn" → iPhone 15 Pro Max
-- "Giá iphone 16 plus" → iPhone 16 Plus
-- "iphone 15 pro có hàng ở cửa hàng nào?" → iPhone 15 Pro
-- "tư vấn laptop gaming 20 triệu" → laptop gaming
-- Nếu câu mới là hỏi tiếp (vd: "còn hàng không", "giá sao", "cái đó") → dùng ngữ cảnh để giữ đúng sản phẩm"""
+- "Giá ip 16 pro max 256gb titan tự nhiên" → iPhone 16 Pro Max 256GB Titan Tự Nhiên
+- "Check giá s24 ultra 512gb" → Samsung Galaxy S24 Ultra 512GB
+- "SVIP mua iPhone 17prm 256" → iPhone 17 Pro Max 256GB
+- "Shop còn iPhone 16 Plus 256 màu hồng" → iPhone 16 Plus 256GB Hồng
+- "Gần 288 3 tháng 3 còn iPhone 16 Pro 128 Titan sa mạc" → iPhone 16 Pro 128GB Titan Sa Mạc
+- "Trả góp Home Credit iPhone 16 128gb" → iPhone 16 128GB
+- "Gói BH VIP rơi vỡ iPhone 16 Pro Max" → iPhone 16 Pro Max
+- Nếu câu mới là hỏi tiếp → dùng ngữ cảnh giữ đúng sản phẩm"""
 
 
 def _serialize_product_data(product_data: dict[str, Any]) -> str:
@@ -174,6 +259,7 @@ def _build_analysis_prompt(
     shop_stock = product_data.get("shop_stock")
     online_stock = product_data.get("online_stock")
     primary = product_data.get("primary_product") or {}
+    scenarios = product_data.get("question_scenarios") or {}
     system = SYSTEM_PROMPT
     if shop_stock or online_stock or primary.get("stock_status"):
         system = f"{system}\n{SHOP_STOCK_PROMPT_ADDON}"
@@ -182,8 +268,27 @@ def _build_analysis_prompt(
         or primary.get("promotions")
         or primary.get("promotion_info")
         or primary.get("stock_status")
+        or scenarios.get("price_promotion")
     ):
-        system = f"{system}\n{MEMBER_PRICE_PROMPT_ADDON}"
+        system = f"{system}\n{MEMBER_PRICE_PROMPT_ADDON}\n{MEMBER_TIER_HINTS}"
+    if product_data.get("trade_promo") or scenarios.get("trade_in"):
+        system = f"{system}\n{TRADE_IN_PROMPT_ADDON}"
+    if scenarios.get("installment") or product_data.get("installment"):
+        system = f"{system}\n{INSTALLMENT_PROMPT_ADDON}"
+    if (
+        scenarios.get("warranty")
+        or primary.get("warranty_information")
+        or product_data.get("extended_warranty")
+    ):
+        system = f"{system}\n{WARRANTY_PROMPT_ADDON}"
+    if scenarios.get("specs") or primary.get("specifications"):
+        system = f"{system}\n{SPECS_PROMPT_ADDON}"
+    if product_data.get("compare_mode") or scenarios.get("compare"):
+        system = f"{system}\n{COMPARE_PROMPT_ADDON}"
+    if scenarios.get("advice"):
+        system = f"{system}\n{ADVICE_PROMPT_ADDON}"
+    if scenarios.get("incoming_stock"):
+        system = f"{system}\n{INCOMING_STOCK_PROMPT_ADDON}"
     system = f"{system}\n{PRODUCT_DATA_PROMPT_ADDON}"
     return (
         f"{system}\n\n"
@@ -192,6 +297,42 @@ def _build_analysis_prompt(
         f"=== CÂU HỎI KHÁCH HÀNG (mới nhất) ===\n{user_question}\n\n"
         "Hãy trả lời theo ngữ cảnh hội thoại (nếu khách hỏi tiếp về cùng sản phẩm):"
     )
+
+
+def _trim_compare_side(text: str) -> str:
+    cleaned = _strip_search_noise(_replace_abbrev_tokens(text))
+    return re.sub(
+        r"^(?:tư vấn|tu van|nên mua|nen mua|đang dùng|dang dung|từ|tu|lên|len|qua|sang)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def extract_compare_product_queries(text: str) -> list[str]:
+    """
+    Tách 2 sản phẩm khi khách so sánh (vd: So sánh S26 Ultra và S25 Ultra).
+    Trả [] nếu không phải câu so sánh hoặc không tách được.
+    """
+    value = (text or "").strip()
+    if not value:
+        return []
+    lower = value.lower()
+    if not any(
+        marker in lower
+        for marker in ("so sánh", "so sanh", " vs ", " vs.", " và ", " va ", "với", "voi")
+    ):
+        return []
+
+    body = _COMPARE_LEADING_RE.sub("", value).strip()
+    parts = _COMPARE_SEP_RE.split(body, maxsplit=1)
+    if len(parts) != 2:
+        return []
+
+    left = _trim_compare_side(parts[0])
+    right = _trim_compare_side(parts[1])
+    queries = [q for q in (left, right) if q and len(q) >= 3]
+    return queries if len(queries) == 2 else []
 
 
 def _extract_usage(response: Any) -> dict[str, int]:
@@ -296,6 +437,8 @@ def _strip_search_noise(text: str) -> str:
     cleaned = (text or "").strip().rstrip("?").strip()
     cleaned = _SEARCH_PREFIX_RE.sub("", cleaned)
     cleaned = _SHOP_INQUIRY_SUFFIX_RE.sub("", cleaned)
+    cleaned = _TRADE_CONTEXT_RE.sub(" ", cleaned)
+    cleaned = _WARRANTY_CONTEXT_RE.sub(" ", cleaned)
     cleaned = _strip_question_noise(cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 

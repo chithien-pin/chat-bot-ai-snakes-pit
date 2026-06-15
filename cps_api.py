@@ -41,6 +41,33 @@ PROVINCE_ID_TO_NAME: dict[int, str] = {
     27: "Đà Nẵng",
 }
 
+# company_id theo tỉnh — tham chiếu cps-nuxt-standard/store/province.js, ChangeProvince.vue
+PROVINCE_COMPANY_ID: dict[int, int] = {
+    30: 12869,  # Miền Nam
+    24: 3759,   # Miền Bắc
+    27: 3759,
+}
+
+PROVINCE_NAME_ALIASES: dict[str, int] = {
+    "hồ chí minh": 30,
+    "ho chi minh": 30,
+    "hcm": 30,
+    "tp hcm": 30,
+    "tp.hcm": 30,
+    "sài gòn": 30,
+    "sai gon": 30,
+    "hà nội": 24,
+    "ha noi": 24,
+    "hn": 24,
+    "đà nẵng": 27,
+    "da nang": 27,
+}
+
+# stock_available_id — cps-nuxt-standard/helper/function/constants/stock-available.js
+STOCK_AVAILABLE_PRE_ORDER = 152
+STOCK_AVAILABLE_IN_STOCK = 46
+STOCK_AVAILABLE_OUT_OF_STOCK = 43
+
 _ACCESSORY_PATH_HINTS = (
     "op-lung", "op lung", "bao-da", "kinh-cuong-luc", "mieng-dan", "cap-", "sac-",
     "tai-nghe", "chuot-", "ban-phim",
@@ -54,6 +81,66 @@ _PAGE_FETCH_HEADERS = {
     "Accept-Language": "vi-VN,vi;q=0.9",
 }
 
+_PRICE_QUESTION_RE = re.compile(
+    r"\b("
+    r"giá|gia|bao nhiêu|bao nhieu|giảm|giam|khuyến mãi|khuyen mai|"
+    r"ưu đãi|uu dai|voucher|pmh|kredivo|vib|vnpay|quẹt thẻ|quet the|"
+    r"hssv|học sinh|hoc sinh|sinh viên|sinh vien|svip|s-member|smember|"
+    r"giá cuối|gia cuoi|trợ giá|tro gia"
+    r")\b",
+    re.IGNORECASE,
+)
+_TRADE_IN_QUESTION_RE = re.compile(
+    r"\b("
+    r"thu cũ|thu cu|trade[- ]?in|đổi mới|doi moi|lên đời|len doi|"
+    r"trợ giá thu cũ|tro gia thu cu|đổi máy|doi may|máy cũ|may cu"
+    r")\b",
+    re.IGNORECASE,
+)
+_INSTALLMENT_QUESTION_RE = re.compile(
+    r"\b("
+    r"trả góp|tra gop|trả trước|tra truoc|gói trả góp|goi tra gop|"
+    r"home credit|homecredit|kredivo|fundiin|mcredit|fecredit|"
+    r"home credit|homecredit|cttc|"
+    r"kỳ hạn|ky han|"
+    r"miễn lãi|mien lai|chuyển đổi trả góp|"
+    r"thẻ tín dụng|the tin dung|techcombank|tcb|alepay|onepay|"
+    r"vib|vnpay"
+    r")\b",
+    re.IGNORECASE,
+)
+_WARRANTY_QUESTION_RE = re.compile(
+    r"\b("
+    r"bảo hành|bao hanh|apple care|applecare|đổi trả|doi tra|"
+    r"đổi mới|1 đổi 1|hoàn tiền|hoan tien|gói bảo hành|goi bao hanh|"
+    r"rơi vỡ|roi vo|vip"
+    r")\b",
+    re.IGNORECASE,
+)
+_COMPARE_QUESTION_RE = re.compile(
+    r"\b(so sánh|so sanh|vs\.?|với|voi|khác biệt|khac biet|nên mua|nen mua)\b",
+    re.IGNORECASE,
+)
+_SPECS_QUESTION_RE = re.compile(
+    r"\b("
+    r"thông số|thong so|spec|megapixel|mp|hz|pin|sạc|sac|watt|w\b|"
+    r"tương thích|tuong thich|dùng chung|dung chung|apple pencil|"
+    r"card đồ họa|card do hoa|chip|camera|zoom"
+    r")\b",
+    re.IGNORECASE,
+)
+_ADVICE_QUESTION_RE = re.compile(
+    r"\b("
+    r"tư vấn|tu van|chọn|chon|phân vân|phan van|tầm giá|tam gia|"
+    r"mua tặng|mua tang|phù hợp|phu hop|nên|nen"
+    r")\b",
+    re.IGNORECASE,
+)
+_INCOMING_STOCK_RE = re.compile(
+    r"\b(hàng về|hang ve|khi nào về|khi nao ve|bao giờ về|bao gio ve|"
+    r"pre[- ]?order|đặt trước|dat truoc)\b",
+    re.IGNORECASE,
+)
 _SHOP_STOCK_QUESTION_RE = re.compile(
     r"\b("
     r"cửa hàng|cua hang|chi nhánh|chi nhanh|shop nào|shop nao|shop mình|shop minh|"
@@ -121,6 +208,7 @@ query getProductDataDetail($id: ID!, $provinceId: Int!) {
       product_id
       sku
       manufacturer
+      up_sell
       categories {
         categoryId
         name
@@ -140,14 +228,64 @@ query getProductDataDetail($id: ID!, $provinceId: Int!) {
       short_description
       stock
       stock_available_id
+      company_stock_id
+      company_stock_quantity
       display_price
       promotion_info
       product_condition
+      included_accessories
+      warranty_information
+      member_promotion
+      is_installment
     }
     specification {
       basic
       full_by_group
     }
+  }
+}
+"""
+
+TRADE_PROMO_QUERY = """
+query tradePromo($productId: Int!, $categoryIds: [String!]!, $companyId: Int!) {
+  trade_promo(
+    productId: $productId
+    categoryIds: $categoryIds
+    companyId: $companyId
+  ) {
+    product_id
+    promo_value
+    pmh
+  }
+}
+"""
+
+EXTENDED_WARRANTY_QUERY = """
+query warranty($productId: Int!, $categories: [Int!]!, $productPrice: Float!) {
+  extended_warranty(
+    warranty_product: {
+      product_id: $productId
+      categories: $categories
+      product_price: $productPrice
+    }
+  ) {
+    product_id
+    warranty_url
+    warranty_packs {
+      pack_id
+      pack_code
+      pack_title
+      pack_tooltip
+      value
+    }
+  }
+}
+"""
+
+INSTOCK_PROVINCES_QUERY = """
+query InstockProvince($productId: Int!, $companyId: Int!) {
+  instock_provinces(product_id: $productId, company_id: $companyId) {
+    id
   }
 }
 """
@@ -298,18 +436,31 @@ def _format_stock_status(filterable: dict[str, Any]) -> str:
     parts: list[str] = []
     if product_state:
         parts.append(product_state)
+    try:
+        said = int(stock_available_id) if stock_available_id is not None else None
+    except (TypeError, ValueError):
+        said = None
+    if said == STOCK_AVAILABLE_PRE_ORDER and not product_state:
+        parts.append("Đặt trước / hàng về")
+    elif said == STOCK_AVAILABLE_OUT_OF_STOCK and not product_state:
+        parts.append("Tạm hết hàng")
+
     if stock is not None:
         try:
             stock_num = int(stock)
             if stock_num > 0:
                 parts.append(f"Còn hàng ({stock_num})")
-            elif not product_state:
+            elif not product_state and said != STOCK_AVAILABLE_PRE_ORDER:
                 parts.append("Tạm hết hàng")
         except (TypeError, ValueError):
             pass
     elif stock_available_id is not None:
         try:
-            if int(stock_available_id) > 0:
+            if int(stock_available_id) in (
+                STOCK_AVAILABLE_IN_STOCK,
+                STOCK_AVAILABLE_PRE_ORDER,
+                4920,
+            ):
                 parts.append("Còn hàng")
         except (TypeError, ValueError):
             pass
@@ -616,9 +767,34 @@ def normalize_product_detail(
         except (TypeError, ValueError):
             stock_qty = None
 
+    category_objs = [
+        c for c in (general.get("categories") or []) if isinstance(c, dict)
+    ]
+    category_ids = [
+        str(c.get("categoryId"))
+        for c in category_objs
+        if c.get("categoryId") is not None
+    ]
+
+    warranty_info = _strip_html(str(filterable.get("warranty_information") or ""))
+    included_acc = _strip_html(str(filterable.get("included_accessories") or ""))
+    member_promo = _strip_html(str(filterable.get("member_promotion") or ""))
+    product_condition = _strip_html(str(filterable.get("product_condition") or ""))
+
+    try:
+        company_stock_qty = int(filterable.get("company_stock_quantity") or 0)
+    except (TypeError, ValueError):
+        company_stock_qty = None
+
+    try:
+        stock_available_id = int(filterable.get("stock_available_id") or 0)
+    except (TypeError, ValueError):
+        stock_available_id = None
+
     return {
         "name": general.get("name") or filterable.get("short_name") or "",
         "price": _format_price(sale_price),
+        "price_value": int(sale_price) if sale_price is not None else None,
         "old_price": _format_price(old_price_val) if old_price_val else "",
         "description": _strip_html(
             str(
@@ -630,6 +806,8 @@ def normalize_product_detail(
         "specifications": _parse_specifications(specification),
         "stock_status": _format_stock_status(filterable),
         "stock_quantity": stock_qty,
+        "stock_available_id": stock_available_id,
+        "company_stock_quantity": company_stock_qty,
         "url": product_url,
         "url_path": url_path,
         "thumbnail": thumbnail,
@@ -640,9 +818,10 @@ def normalize_product_detail(
         ),
         "category_id": str(
             (url_info or {}).get("category_id")
-            or (categories[0] if categories else "")
+            or (category_ids[0] if category_ids else "")
             or ""
         ),
+        "category_ids": category_ids,
         "sku": general.get("sku") or "",
         "manufacturer": general.get("manufacturer") or "",
         "categories": categories,
@@ -650,6 +829,14 @@ def normalize_product_detail(
         "promotion_info": _strip_html(str(filterable.get("promotion_info") or "")),
         "member_prices": _parse_member_prices(filterable.get("prices")),
         "promotions": _build_promotions(filterable),
+        "warranty_information": warranty_info,
+        "included_accessories": included_acc,
+        "member_promotion": member_promo,
+        "product_condition": product_condition,
+        "relation": general.get("relation") or "",
+        "related_name": general.get("related_name") or "",
+        "up_sell": general.get("up_sell") or [],
+        "is_installment": filterable.get("is_installment"),
     }
 
 
@@ -1080,6 +1267,230 @@ def is_shop_stock_question(text: str) -> bool:
     return bool(_SHOP_STOCK_QUESTION_RE.search(text or ""))
 
 
+def classify_question_scenarios(text: str) -> dict[str, bool]:
+    """Phân loại kịch bản CSV — dùng để enrich payload và prompt Gemini."""
+    value = text or ""
+    return {
+        "price_promotion": bool(_PRICE_QUESTION_RE.search(value)),
+        "shop_stock": is_shop_stock_question(value),
+        "trade_in": bool(_TRADE_IN_QUESTION_RE.search(value)),
+        "installment": bool(_INSTALLMENT_QUESTION_RE.search(value)),
+        "warranty": bool(_WARRANTY_QUESTION_RE.search(value)),
+        "compare": bool(_COMPARE_QUESTION_RE.search(value)),
+        "specs": bool(_SPECS_QUESTION_RE.search(value)),
+        "advice": bool(_ADVICE_QUESTION_RE.search(value)),
+        "incoming_stock": bool(_INCOMING_STOCK_RE.search(value)),
+    }
+
+
+def company_id_for_province(province_id: int) -> int:
+    return PROVINCE_COMPANY_ID.get(province_id, PROVINCE_COMPANY_ID.get(CPS_PROVINCE_ID, 12869))
+
+
+def resolve_province_from_text(text: str) -> int | None:
+    """Trích tỉnh/thành từ câu hỏi (vd: Hà Nội, HCM)."""
+    lower = (text or "").lower()
+    for alias, pid in sorted(
+        PROVINCE_NAME_ALIASES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        if alias in lower:
+            return pid
+    return None
+
+
+async def fetch_trade_promo_for_product(
+    detail: dict[str, Any],
+    *,
+    province_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Trợ giá thu cũ / trade-in — graphql-dashboard trade_promo."""
+    product_id = detail.get("product_id")
+    if not product_id:
+        return None
+    try:
+        pid = int(product_id)
+    except (TypeError, ValueError):
+        return None
+
+    category_ids = [str(c) for c in (detail.get("category_ids") or []) if c]
+    if not category_ids and detail.get("category_id"):
+        category_ids = [str(detail["category_id"])]
+
+    pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
+    company_id = company_id_for_province(pid_province)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_DASHBOARD_ENDPOINT,
+            TRADE_PROMO_QUERY,
+            {
+                "productId": pid,
+                "categoryIds": category_ids,
+                "companyId": company_id,
+            },
+        )
+    promo = payload.get("data", {}).get("trade_promo")
+    if not promo:
+        return None
+
+    promo_value = _price_amount(promo.get("promo_value"))
+    pmh = _price_amount(promo.get("pmh"))
+    return {
+        "product_id": promo.get("product_id"),
+        "promo_value": int(promo_value) if promo_value else 0,
+        "promo_value_formatted": _format_price(promo_value) if promo_value else "",
+        "pmh": int(pmh) if pmh else 0,
+        "pmh_formatted": _format_price(pmh) if pmh else "",
+        "company_id": company_id,
+        "note": (
+            "Giá trị tham khảo từ chương trình trade-in CellphoneS; "
+            "giá thu cũ thực tế phụ thuộc tình trạng máy."
+        ),
+    }
+
+
+async def fetch_extended_warranty_for_product(
+    detail: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Gói bảo hành mở rộng — graphql-dashboard extended_warranty."""
+    product_id = detail.get("product_id")
+    price_value = detail.get("price_value")
+    if not product_id or not price_value:
+        return None
+    try:
+        pid = int(product_id)
+        categories = [int(c) for c in (detail.get("category_ids") or []) if str(c).isdigit()]
+    except (TypeError, ValueError):
+        return None
+    if not categories:
+        return None
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_DASHBOARD_ENDPOINT,
+            EXTENDED_WARRANTY_QUERY,
+            {
+                "productId": pid,
+                "categories": categories,
+                "productPrice": float(price_value),
+            },
+        )
+    data = payload.get("data", {}).get("extended_warranty")
+    if not data:
+        return None
+
+    packs: list[dict[str, Any]] = []
+    for pack in data.get("warranty_packs") or []:
+        if not isinstance(pack, dict):
+            continue
+        value = _price_amount(pack.get("value"))
+        packs.append(
+            {
+                "pack_id": pack.get("pack_id"),
+                "pack_title": _strip_html(str(pack.get("pack_title") or "")),
+                "pack_tooltip": _strip_html(str(pack.get("pack_tooltip") or "")),
+                "value": int(value) if value else 0,
+                "value_formatted": _format_price(value) if value else "",
+            }
+        )
+    return {
+        "warranty_url": data.get("warranty_url") or "",
+        "warranty_packs": packs,
+    }
+
+
+async def fetch_instock_other_provinces(
+    product_id: str | int,
+    *,
+    province_id: int | None = None,
+) -> list[str]:
+    """Tỉnh khác trong cùng vùng còn tồn — instock_provinces."""
+    try:
+        pid = int(product_id)
+    except (TypeError, ValueError):
+        return []
+
+    pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
+    company_id = company_id_for_province(pid_province)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_V2_ENDPOINT,
+            INSTOCK_PROVINCES_QUERY,
+            {"productId": pid, "companyId": company_id},
+        )
+    rows = payload.get("data", {}).get("instock_provinces") or []
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        prov_id = row.get("id")
+        try:
+            prov_int = int(prov_id)
+        except (TypeError, ValueError):
+            continue
+        if prov_int == pid_province:
+            continue
+        name = PROVINCE_ID_TO_NAME.get(prov_int)
+        if name:
+            names.append(name)
+    return names
+
+
+async def enrich_payload_for_scenarios(
+    payload: dict[str, Any],
+    detail: dict[str, Any],
+    *,
+    user_question: str = "",
+) -> dict[str, bool]:
+    """Bổ sung dữ liệu theo kịch bản CSV; trả về flags đã fetch."""
+    scenarios = classify_question_scenarios(user_question)
+    payload["question_scenarios"] = scenarios
+    fetched: dict[str, bool] = {}
+
+    if scenarios.get("trade_in") or scenarios.get("price_promotion"):
+        trade = await fetch_trade_promo_for_product(detail)
+        if trade:
+            payload["trade_promo"] = trade
+            fetched["trade_promo"] = True
+
+    if scenarios.get("warranty"):
+        warranty = await fetch_extended_warranty_for_product(detail)
+        if warranty:
+            payload["extended_warranty"] = warranty
+            fetched["extended_warranty"] = True
+
+    if scenarios.get("shop_stock") and detail.get("product_id"):
+        other = await fetch_instock_other_provinces(detail["product_id"])
+        if other:
+            payload["instock_other_provinces"] = other
+            fetched["instock_other_provinces"] = True
+
+    if scenarios.get("installment"):
+        from cps_installment import fetch_installment_context
+
+        installment_ctx = await fetch_installment_context(
+            detail,
+            user_question=user_question,
+        )
+        if installment_ctx:
+            payload["installment"] = installment_ctx
+            fetched["installment"] = True
+
+    if scenarios.get("warranty") and not detail.get("warranty_information"):
+        payload["policy_note"] = (
+            "Chính sách đổi trả chi tiết (7 ngày, 1 đổi 1) nằm trên website CellphoneS; "
+            "bot chỉ có warranty_information và gói BH mở rộng từ API sản phẩm."
+        )
+
+    return fetched
+
+
 def extract_location_hint(text: str) -> str:
     """Trích gợi ý địa điểm từ câu hỏi (vd: gần 288 3 tháng 2, quận 10)."""
     value = (text or "").strip()
@@ -1254,9 +1665,11 @@ async def attach_shop_stock_to_payload(
         "stock_quantity": qty,
     }
 
+    province_id = resolve_province_from_text(user_question) or CPS_PROVINCE_ID
     shop_ctx = await fetch_shop_stock_context(
         product_id,
         user_question=user_question,
+        province_id=province_id,
         product_name=detail.get("name") or "",
         url_path=str(detail.get("url_path") or ""),
         online_stock_status=stock_status,

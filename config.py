@@ -82,6 +82,17 @@ CPS_GRAPHQL_DASHBOARD_ENDPOINT = os.getenv(
     "https://api.cellphones.com.vn/graphql-dashboard/graphql/query",
 ).strip()
 
+# Cart / Payment / SSO — trả góp (cps-nuxt-standard .prod.env)
+CPS_API_BASE_URL = os.getenv(
+    "CPS_API_BASE_URL",
+    "https://api.cellphones.com.vn",
+).strip().rstrip("/")
+CPS_PAYMENT_VER = os.getenv("CPS_PAYMENT_VER", "v3").strip()
+CPS_SSO_GUEST_TOKEN_URL = os.getenv(
+    "CPS_SSO_GUEST_TOKEN_URL",
+    "https://api.smember.com.vn/sso/v1/auth/guest-token",
+).strip()
+
 # SerpAPI Google search (site:cellphones.com.vn)
 SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()

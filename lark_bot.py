@@ -55,7 +55,11 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTriggerResponse,
 )
 from lark_ws_patch import apply_lark_ws_card_patch
-from cps_api import attach_shop_stock_to_payload, fetch_product_for_query
+from cps_api import (
+    attach_shop_stock_to_payload,
+    enrich_payload_for_scenarios,
+    fetch_product_for_query,
+)
 from conversation import (
     append_turn,
     clear_session,
@@ -64,6 +68,7 @@ from conversation import (
 )
 from gemini_client import (
     analyze_product_with_meta,
+    extract_compare_product_queries,
     extract_search_keywords,
     is_contextual_follow_up,
     needs_query_expansion,
@@ -83,28 +88,25 @@ WELCOME_TEXT = (
     "Tôi là bot tư vấn sản phẩm công nghệ, lấy dữ liệu từ CellphoneS "
     "và phân tích bằng Gemini AI.\n\n"
     "💬 Hãy hỏi tôi, ví dụ:\n"
-    "• iPhone 15 Pro Max giá bao nhiêu?\n"
-    "• Laptop gaming dưới 20 triệu\n"
-    "• Samsung Galaxy S25 có còn hàng không?\n"
-    "• iPhone 16 Pro còn hàng ở cửa hàng nào?\n"
-    "• Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?\n\n"
+    "• Giá iPhone 16 Pro Max 256GB hôm nay?\n"
+    "• SVIP/HSSV mua MacBook Air M2 giảm bao nhiêu?\n"
+    "• Shop còn iPhone 16 Plus 256 màu hồng không?\n"
+    "• Gần 288 3 Tháng 2 shop nào còn iPhone 16 Pro?\n"
+    "• Lên đời iPhone được trợ giá thu cũ bao nhiêu?\n"
+    "• So sánh S26 Ultra và S25 Ultra\n\n"
     "Trong group: @bot + câu hỏi.\n"
     "Gõ /help để xem hướng dẫn."
 )
 HELP_TEXT = (
     "📖 Hướng dẫn sử dụng\n\n"
     "1️⃣ Gửi câu hỏi về sản phẩm công nghệ (tiếng Việt).\n"
-    "2️⃣ Bot sẽ tìm trên cellphones.com.vn và phân tích.\n"
+    "2️⃣ Bot tìm trên cellphones.com.vn và phân tích.\n"
     "3️⃣ Nhận câu trả lời kèm link sản phẩm gốc.\n\n"
-    "Lệnh:\n"
-    "/start — Chào mừng\n"
-    "/help — Hướng dẫn\n"
-    "/clear — Xóa ngữ cảnh hội thoại\n"
-    "/chatid — Lấy chat ID cho .env\n\n"
-    "💡 Bot nhớ vài tin gần nhất trong cùng chat để hiểu câu hỏi tiếp "
-    "(vd: còn hàng không? sau khi hỏi iPhone).\n\n"
-    "🏪 Kiểm tra tồn cửa hàng: hỏi shop/chi nhánh còn hàng hoặc gần địa chỉ.\n\n"
-    "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực tế trên website."
+    "Lệnh: /start · /help · /clear · /chatid\n\n"
+    "Bot hỗ trợ: giá & KM (Smember/HSSV), tồn cửa hàng, thu cũ đổi mới, "
+    "trả góp, bảo hành, so sánh 2 SP, thông số & tư vấn chọn mua.\n\n"
+    "💡 Bot nhớ ngữ cảnh vài tin gần nhất.\n\n"
+    "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực trên website."
 )
 
 _sessions: dict[str, Any] = {}
@@ -476,15 +478,19 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
     product_url = ""
     response_link_url = ""
     try:
+        compare_queries = extract_compare_product_queries(user_question)
         t0 = time.perf_counter()
         kw_context = (
             conversation_context if is_follow_up else ""
         )
-        if needs_query_expansion(user_question):
-            messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
-        search_keywords = await asyncio.to_thread(
-            extract_search_keywords, user_question, kw_context
-        )
+        if compare_queries:
+            search_keywords = compare_queries[0]
+        else:
+            if needs_query_expansion(user_question):
+                messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
+            search_keywords = await asyncio.to_thread(
+                extract_search_keywords, user_question, kw_context
+            )
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         if not search_keywords:
             messenger.send_final("😔 Không hiểu được sản phẩm bạn cần tìm.")
@@ -510,13 +516,44 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         messenger.update_status(f"🔍 Đang tìm: {search_keywords}...")
         response_link_url = ""
         t1 = time.perf_counter()
-        results, detail, fetch_stats = await fetch_product_for_query(
-            search_keywords,
-            user_message=user_question,
-            fallback_url=fallback_url,
-        )
+        compare_products: list[dict[str, Any]] = []
+        if compare_queries:
+            messenger.update_status("⚖️ Đang so sánh 2 sản phẩm...")
+            fetch_stats: dict[str, Any] = {}
+            for kw in compare_queries[:2]:
+                sub_results, sub_detail, sub_stats = await fetch_product_for_query(
+                    kw,
+                    user_message=user_question,
+                )
+                for key, val in sub_stats.items():
+                    if isinstance(val, int):
+                        fetch_stats[key] = int(fetch_stats.get(key, 0)) + val
+                    elif key == "resolve_source" and val:
+                        fetch_stats[key] = val
+                if sub_detail:
+                    compare_products.append(sub_detail)
+            results = []
+            detail = compare_products[0] if compare_products else {}
+        else:
+            results, detail, fetch_stats = await fetch_product_for_query(
+                search_keywords,
+                user_message=user_question,
+                fallback_url=fallback_url,
+            )
         metric_data["latency_fetch_ms"] = int((time.perf_counter() - t1) * 1000)
         metric_data.update(fetch_stats)
+        if compare_queries and len(compare_products) < 2:
+            messenger.send_final(
+                "😔 Chưa tìm đủ 2 sản phẩm để so sánh.\n"
+                "Thử gõ rõ tên từng máy, vd: So sánh iPhone 16 Pro Max và S25 Ultra"
+            )
+            metric_data["status"] = "compare_not_found"
+            emit_metric(
+                "chat_message",
+                **metric_data,
+                total_latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+            return
         if not results and not detail:
             hint = (
                 f"\n\nTừ khóa đã tìm: {search_keywords}"
@@ -543,12 +580,30 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         product_url = product_url_from_record(detail) or (
             product_url_from_record(results[0]) if results else ""
         )
-        payload = build_product_payload(results, detail)
-        response_link_url = build_response_link_url(
-            search_results=results,
-            detail=detail,
-            search_keywords=search_keywords,
-        )
+        if compare_products:
+            payload = {
+                "compare_mode": True,
+                "compare_products": compare_products,
+                "primary_product": compare_products[0],
+                "search_results": [
+                    {
+                        "name": p.get("name", ""),
+                        "price": p.get("price", ""),
+                        "url": p.get("url", ""),
+                        "product_id": p.get("product_id", ""),
+                    }
+                    for p in compare_products
+                ],
+            }
+            response_link_url = product_url_from_record(compare_products[0]) or ""
+            metric_data["compare_mode"] = True
+        else:
+            payload = build_product_payload(results, detail)
+            response_link_url = build_response_link_url(
+                search_results=results,
+                detail=detail,
+                search_keywords=search_keywords,
+            )
 
         if detail.get("product_id"):
             messenger.update_status("🏪 Đang kiểm tra tồn cửa hàng...")
@@ -558,6 +613,12 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         if shop_ctx:
             metric_data["shop_stock_scenario"] = True
             metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
+
+        scenario_flags = await enrich_payload_for_scenarios(
+            payload, detail, user_question=user_question
+        )
+        if scenario_flags:
+            metric_data["scenario_enrich"] = scenario_flags
 
         llm_label = "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini AI"
         messenger.update_status(f"🤖 Đang phân tích với {llm_label}...")
