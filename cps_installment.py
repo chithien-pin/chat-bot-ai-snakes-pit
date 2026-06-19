@@ -22,6 +22,7 @@ from cps_api import (
     company_id_for_province,
     resolve_province_from_text,
 )
+from cps_provinces import province_name
 from scraper import _format_price
 
 logger = logging.getLogger(__name__)
@@ -468,9 +469,7 @@ async def fetch_installment_context(
 
     ctx: dict[str, Any] = {
         "province_id": pid_province,
-        "province_name": {30: "Hồ Chí Minh", 24: "Hà Nội", 27: "Đà Nẵng"}.get(
-            pid_province, str(pid_province)
-        ),
+        "province_name": province_name(pid_province) or str(pid_province),
         "product_name": detail.get("name") or "",
         "sale_price": sale_price,
         "sale_price_formatted": detail.get("price") or _format_price(sale_price),

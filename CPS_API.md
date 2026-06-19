@@ -141,7 +141,7 @@ Tất cả GraphQL trong `cps_api.py` gọi qua helper `_graphql()`:
 }
 ```
 
-**Filter:** `stock.from: 1`, `company_stock_id: [46, 152, 4920]`, sort `view: desc`.
+**Filter:** `stock.from: 1`, `company_stock_id: [46, 152, 4920, 4164]`, sort `view: desc`.
 
 **Dùng khi:** URL resolve ra `category_id` thay vì `product_id` (trang danh mục).
 
@@ -323,6 +323,9 @@ Module: [`cps_installment.py`](cps_installment.py).
 | `url_info()` | GraphQL URL → `url_info` |
 | `get_product_by_id()` | GraphQL V2 → `product` (+ fallback production) |
 | `get_products_by_category_id()` | GraphQL V2 → `products` |
+| `get_products_by_stock_id()` | GraphQL V2 → `products` (filter `company_stock_id`, không `categories`) |
+| `resolve_stock_filter_ids()` | Trích ID trạng thái từ câu hỏi (regex) |
+| `is_stock_status_browse_query()` | Có phải tìm danh sách SP theo trạng thái không |
 | `fetch_product_from_url()` | `url_info` + `product` hoặc `products` |
 | `fetch_product_for_query()` | SerpAPI → GraphQL **hoặc** `quick_search` → GraphQL |
 | `fetch_trade_promo_for_product()` | GraphQL Dashboard → `trade_promo` |
@@ -354,6 +357,44 @@ Module: [`cps_installment.py`](cps_installment.py).
 | `specs` | thông số, pin, chip, camera, … | — | — |
 | `advice` | tư vấn, chọn, phân vân, … | — | — |
 | `incoming_stock` | hàng về, pre-order, đặt trước, … | — | — |
+| `stock_status` | còn hàng, hết hàng, trạng thái, đăng ký nhận tin, … | — | `stock_availability` |
+| `stock_browse` | tìm SP theo trạng thái (đặt trước, đăng ký nhận tin…) | GraphQL `products` + `company_stock_id` | `search_results`, `stock_filter_ids` |
+
+### 3.5 GraphQL V2 — sản phẩm theo trạng thái tồn
+
+| | |
+|---|---|
+| **Endpoint** | `CPS_GRAPHQL_V2_ENDPOINT` |
+| **Hàm** | `get_products_by_stock_id(company_stock_ids, province_id?, size?, page?)` |
+| **Query** | `GetProductsByStockId` |
+
+Giống query danh mục nhưng **không** có `categories`; truyền `company_stock_id: [id]`:
+
+```json
+{
+  "provinceId": 30,
+  "size": 24,
+  "page": 1,
+  "companyStockIds": [152]
+}
+```
+
+**Dùng khi:** khách tìm SP theo trạng thái — *"iPhone đặt trước"*, *"đăng ký nhận tin"*, *"danh sách còn hàng"*… (`fetch_product_for_query` → `resolve_source: stock_status_filter`).
+
+---
+
+**`stock_available_id` (CellphoneS):**
+
+| ID | Mã | Nhãn |
+|----|-----|------|
+| 43 | `out_of_stock` | Hết hàng |
+| 46 | `in_stock` | Còn hàng |
+| 56 | `subscription` | Đăng ký nhận tin |
+| 152 | `pre_order` | Đặt trước |
+| 4164 | `drop_shipping` | Drop shipping |
+| 4920 | `virtual_stock` | Tồn ảo / còn hàng online |
+
+Hàm `parse_stock_availability()` map từ GraphQL `filterable` → `stock_availability` trong payload.
 
 **Tồn cửa hàng chi tiết** gọi riêng qua `attach_shop_stock_to_payload()` → `shop_stock` trong payload.
 

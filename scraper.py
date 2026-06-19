@@ -48,6 +48,46 @@ query quick_search($terms: String!, $province: Int!) {
 }
 """
 
+ADVANCED_SEARCH_QUERY = """
+query advanced_search($terms: String!, $province: Int!, $page: Int!, $categoryId: Int) {
+  advanced_search(
+    user_query: { terms: $terms, province: $province, category_id: $categoryId }
+    page: $page
+  ) {
+    products {
+      product_id
+      name
+      url_path
+      price
+      special_price
+      display_price
+      display_root_price
+      thumbnail
+      stock_available_id
+      flash_sale_types
+      promotion_info
+      promotion_information
+      score
+      category_objects {
+        category_id
+        name
+        uri
+      }
+    }
+    related_categories {
+      category_id
+      name
+      uri
+      path
+    }
+    meta {
+      total
+      page
+    }
+  }
+}
+"""
+
 
 def _format_price(amount: float | int | None) -> str:
     """Định dạng giá VNĐ."""
@@ -64,13 +104,70 @@ def _full_url(path: str) -> str:
 
 
 def product_url_from_record(record: dict[str, Any] | None) -> str:
-    """URL sản phẩm — luôn ưu tiên url_path từ GraphQL."""
+    """URL sản phẩm — ưu tiên url_path, rồi url, rồi url_key từ GraphQL."""
     if not record:
         return ""
     url_path = str(record.get("url_path") or "").strip()
     if url_path:
         return _full_url(url_path)
-    return str(record.get("url") or "").strip()
+    url = str(record.get("url") or "").strip()
+    if url:
+        return _full_url(url) if not url.startswith("http") else url
+    url_key = str(record.get("url_key") or "").strip()
+    if url_key:
+        path = url_key if url_key.endswith(".html") else f"{url_key}.html"
+        return _full_url(path)
+    return ""
+
+
+def graphql_product_url(general: dict[str, Any] | None) -> str:
+    """URL từ block general của GraphQL products/quick_search."""
+    if not general:
+        return ""
+    return product_url_from_record(
+        {
+            "url_path": general.get("url_path"),
+            "url_key": general.get("url_key"),
+        }
+    )
+
+
+def normalize_search_result(record: dict[str, Any]) -> dict[str, Any]:
+    """Đảm bảo mỗi kết quả có url đầy đủ cho bot/Gemini."""
+    out = dict(record)
+    url = product_url_from_record(out)
+    if url:
+        out["url"] = url
+    if not out.get("url_path") and url:
+        try:
+            out["url_path"] = url.split("cellphones.com.vn/", 1)[-1].lstrip("/")
+        except (IndexError, AttributeError):
+            pass
+    return out
+
+
+def normalize_search_results(
+    search_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [normalize_search_result(item) for item in search_results if isinstance(item, dict)]
+
+
+def format_product_links_appendix(
+    search_results: list[dict[str, Any]],
+    *,
+    max_items: int = 8,
+) -> str:
+    """Khối link SP đính kèm cuối tin nhắn khi trả nhiều sản phẩm."""
+    lines: list[str] = []
+    for idx, item in enumerate(normalize_search_results(search_results)[:max_items], start=1):
+        name = (item.get("name") or "Sản phẩm").strip()
+        url = product_url_from_record(item)
+        if not url:
+            continue
+        lines.append(f"{idx}. {name}\n{url}")
+    if not lines:
+        return ""
+    return "\n\n🔗 Link sản phẩm:\n" + "\n".join(lines)
 
 
 def _thumbnail_url(path: str | None) -> str:
@@ -151,6 +248,11 @@ def build_response_link_url(
     """
     keywords = (search_keywords or "").strip()
     category_url = str(detail.get("category_url") or "").strip()
+
+    if detail.get("stock_filter_ids"):
+        primary_url = product_url_from_record(detail)
+        if primary_url:
+            return primary_url
 
     if is_single_product_result(search_results, detail):
         product_url = product_url_from_record(detail)
@@ -282,29 +384,56 @@ def _parse_search_fallback_html(html: str, limit: int = 8) -> list[dict[str, Any
     return products
 
 
-async def search_products(query: str, limit: int = 8) -> list[dict[str, Any]]:
+def _map_search_product_item(item: dict[str, Any]) -> dict[str, Any]:
+    url_path = item.get("url_path") or ""
+    url_key = item.get("url_key") or ""
+    display = item.get("display_price") or item.get("special_price")
+    if display is None:
+        display = item.get("price")
+    return normalize_search_result(
+        {
+            "name": item.get("name", ""),
+            "price": _format_price(display),
+            "url_path": url_path,
+            "url_key": url_key,
+            "thumbnail": _thumbnail_url(item.get("thumbnail")),
+            "product_id": str(item.get("product_id") or ""),
+            "stock_available_id": item.get("stock_available_id"),
+            "flash_sale_types": item.get("flash_sale_types"),
+            "promotion_info": item.get("promotion_info") or "",
+            "score": item.get("score"),
+        }
+    )
+
+
+async def advanced_search(
+    query: str,
+    *,
+    province_id: int | None = None,
+    page: int = 1,
+    category_id: int = 0,
+    limit: int = 12,
+) -> dict[str, Any]:
     """
-    Tìm sản phẩm theo từ khóa qua API GraphQL của Cellphones.
-    Trả về: name, price, url, thumbnail.
+    Tìm kiếm nâng cao — tham chiếu cps-nuxt-standard/store/search-graphql.js.
+    Trả products, related_categories, meta.
     """
     query = query.strip()
     if not query:
-        return []
+        return {"products": [], "related_categories": [], "meta": {}}
 
-    products: list[dict[str, Any]] = []
+    pid = province_id if province_id is not None else CPS_PROVINCE_ID
+    variables: dict[str, Any] = {
+        "terms": query,
+        "province": pid,
+        "page": page,
+    }
+    if category_id:
+        variables["categoryId"] = category_id
 
-    async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, timeout=30.0
-    ) as client:
-        # Ưu tiên API quick_search (ổn định hơn scrape HTML)
+    async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=30.0) as client:
         try:
-            payload = {
-                "query": QUICK_SEARCH_QUERY,
-                "variables": {
-                    "terms": query,
-                    "province": CPS_PROVINCE_ID,
-                },
-            }
+            payload = {"query": ADVANCED_SEARCH_QUERY, "variables": variables}
             response = await client.post(
                 SEARCH_GRAPHQL_URL,
                 json=payload,
@@ -312,30 +441,107 @@ async def search_products(query: str, limit: int = 8) -> list[dict[str, Any]]:
             )
             response.raise_for_status()
             data = response.json()
-            items = (
-                data.get("data", {})
-                .get("quick_search", {})
-                .get("products", [])
-                or []
-            )
-            for item in items[:limit]:
-                url_path = item.get("url_path") or ""
-                display = item.get("display_price") or item.get("special_price")
-                if display is None:
-                    display = item.get("price")
-                products.append(
-                    {
-                        "name": item.get("name", ""),
-                        "price": _format_price(display),
-                        "url_path": url_path,
-                        "url": _full_url(url_path),
-                        "thumbnail": _thumbnail_url(item.get("thumbnail")),
-                    }
-                )
+            block = data.get("data", {}).get("advanced_search") or {}
+            items = block.get("products") or []
+            products = [_map_search_product_item(item) for item in items[:limit]]
+            return {
+                "products": products,
+                "related_categories": block.get("related_categories") or [],
+                "meta": block.get("meta") or {},
+            }
         except Exception as exc:
-            logger.warning("API quick_search lỗi: %s", exc)
+            logger.warning("API advanced_search lỗi: %s", exc)
+            return {"products": [], "related_categories": [], "meta": {}}
 
-        # Dự phòng: scrape trang kết quả tìm kiếm
+
+def search_results_need_advanced(
+    results: list[dict[str, Any]],
+    keywords: str,
+) -> bool:
+    """True khi kết quả search trống hoặc nhiễu — nên thử API search khác."""
+    if not results:
+        return True
+    if len(results) == 1:
+        return False
+    kw_tokens = {
+        t
+        for t in re.sub(r"[^\w\s]", " ", keywords.lower()).split()
+        if len(t) >= 2 or t.isdigit()
+    }
+    if not kw_tokens:
+        return False
+    best = results[0]
+    name_tokens = set(re.sub(r"[^\w\s]", " ", (best.get("name") or "").lower()).split())
+    overlap = len(kw_tokens & name_tokens)
+    return overlap < max(1, len(kw_tokens) // 3)
+
+
+async def _quick_search(
+    client: httpx.AsyncClient,
+    query: str,
+    *,
+    province_id: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """GraphQL quick_search — fallback khi advanced_search thiếu/nhiễu."""
+    products: list[dict[str, Any]] = []
+    try:
+        payload = {
+            "query": QUICK_SEARCH_QUERY,
+            "variables": {
+                "terms": query,
+                "province": province_id,
+            },
+        }
+        response = await client.post(
+            SEARCH_GRAPHQL_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        items = (
+            data.get("data", {})
+            .get("quick_search", {})
+            .get("products", [])
+            or []
+        )
+        for item in items[:limit]:
+            products.append(_map_search_product_item(item))
+    except Exception as exc:
+        logger.warning("API quick_search lỗi: %s", exc)
+    return products
+
+
+async def search_products(
+    query: str,
+    limit: int = 8,
+    *,
+    province_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Tìm sản phẩm theo từ khóa qua API GraphQL của Cellphones.
+    Ưu tiên advanced_search, fallback quick_search rồi scrape catalog.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    pid = province_id if province_id is not None else CPS_PROVINCE_ID
+
+    adv = await advanced_search(query, province_id=pid, limit=limit)
+    products: list[dict[str, Any]] = list(adv.get("products") or [])
+
+    async with httpx.AsyncClient(
+        headers=DEFAULT_HEADERS, timeout=30.0
+    ) as client:
+        if search_results_need_advanced(products, query):
+            quick = await _quick_search(
+                client, query, province_id=pid, limit=limit
+            )
+            if quick:
+                products = quick
+
         if not products:
             try:
                 search_url = f"{CATALOG_SEARCH_URL}?q={quote_plus(query)}"
@@ -379,9 +585,11 @@ def build_product_payload(
     detail: dict[str, Any],
 ) -> dict[str, Any]:
     """Gộp kết quả tìm kiếm + chi tiết để gửi cho Gemini."""
+    results = normalize_search_results(search_results)
+    primary = normalize_search_result(detail)
     return {
-        "search_results": search_results,
-        "primary_product": detail,
+        "search_results": results,
+        "primary_product": primary,
     }
 
 

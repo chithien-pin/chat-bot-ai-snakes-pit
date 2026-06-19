@@ -23,7 +23,22 @@ from config import (
     SERPAPI_ENDPOINT,
     SERPAPI_FALLBACK_TO_CPS_SEARCH,
 )
-from scraper import BASE_URL, _format_price, _full_url, product_url_from_record, search_products
+from budget_browse import (
+    filter_results_by_budget,
+    is_budget_browse_query,
+    parse_budget_constraint,
+    strip_budget_phrases_for_keywords,
+)
+from scraper import (
+    _format_price,
+    _full_url,
+    graphql_product_url,
+    normalize_search_result,
+    normalize_search_results,
+    product_url_from_record,
+    search_products,
+    search_results_need_advanced,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,38 +50,56 @@ CELLPHONES_URL_RE = re.compile(
 # Kho online / depot — loại khỏi danh sách cửa hàng trưng bày (theo cps-nuxt-standard)
 ONLINE_SHOP_EXTERNAL_IDS = frozenset({1280, 1281, 103, 156})
 
-PROVINCE_ID_TO_NAME: dict[int, str] = {
-    30: "Hồ Chí Minh",
-    24: "Hà Nội",
-    27: "Đà Nẵng",
-}
-
-# company_id theo tỉnh — tham chiếu cps-nuxt-standard/store/province.js, ChangeProvince.vue
-PROVINCE_COMPANY_ID: dict[int, int] = {
-    30: 12869,  # Miền Nam
-    24: 3759,   # Miền Bắc
-    27: 3759,
-}
-
-PROVINCE_NAME_ALIASES: dict[str, int] = {
-    "hồ chí minh": 30,
-    "ho chi minh": 30,
-    "hcm": 30,
-    "tp hcm": 30,
-    "tp.hcm": 30,
-    "sài gòn": 30,
-    "sai gon": 30,
-    "hà nội": 24,
-    "ha noi": 24,
-    "hn": 24,
-    "đà nẵng": 27,
-    "da nang": 27,
-}
+from cps_provinces import (
+    PROVINCE_COMPANY_ID,
+    PROVINCE_ID_TO_NAME,
+    PROVINCE_NAME_ALIASES,
+    company_id_for_province,
+    province_name,
+    resolve_province_from_text,
+)
 
 # stock_available_id — cps-nuxt-standard/helper/function/constants/stock-available.js
-STOCK_AVAILABLE_PRE_ORDER = 152
-STOCK_AVAILABLE_IN_STOCK = 46
 STOCK_AVAILABLE_OUT_OF_STOCK = 43
+STOCK_AVAILABLE_IN_STOCK = 46
+STOCK_AVAILABLE_SUBSCRIPTION = 56
+STOCK_AVAILABLE_PRE_ORDER = 152
+STOCK_AVAILABLE_DROP_SHIPPING = 4164
+STOCK_AVAILABLE_VIRTUAL_STOCK = 4920
+
+STOCK_STATUS_CODES: dict[int, str] = {
+    STOCK_AVAILABLE_OUT_OF_STOCK: "out_of_stock",
+    STOCK_AVAILABLE_IN_STOCK: "in_stock",
+    STOCK_AVAILABLE_SUBSCRIPTION: "subscription",
+    STOCK_AVAILABLE_PRE_ORDER: "pre_order",
+    STOCK_AVAILABLE_DROP_SHIPPING: "drop_shipping",
+    STOCK_AVAILABLE_VIRTUAL_STOCK: "virtual_stock",
+}
+
+STOCK_STATUS_LABELS_VI: dict[int, str] = {
+    STOCK_AVAILABLE_OUT_OF_STOCK: "Hết hàng",
+    STOCK_AVAILABLE_IN_STOCK: "Còn hàng",
+    STOCK_AVAILABLE_SUBSCRIPTION: "Đăng ký nhận tin",
+    STOCK_AVAILABLE_PRE_ORDER: "Đặt trước",
+    STOCK_AVAILABLE_DROP_SHIPPING: "Còn hàng (Drop shipping)",
+    STOCK_AVAILABLE_VIRTUAL_STOCK: "Còn hàng online",
+}
+
+# SP có thể mua / đặt qua web (không gồm hết hàng & đăng ký nhận tin)
+STOCK_BUYABLE_IDS = frozenset({
+    STOCK_AVAILABLE_IN_STOCK,
+    STOCK_AVAILABLE_PRE_ORDER,
+    STOCK_AVAILABLE_DROP_SHIPPING,
+    STOCK_AVAILABLE_VIRTUAL_STOCK,
+})
+
+# Filter danh mục GraphQL — SP còn bán / đặt trước / tồn ảo / drop ship
+CATEGORY_LISTABLE_STOCK_IDS = [
+    STOCK_AVAILABLE_IN_STOCK,
+    STOCK_AVAILABLE_PRE_ORDER,
+    STOCK_AVAILABLE_VIRTUAL_STOCK,
+    STOCK_AVAILABLE_DROP_SHIPPING,
+]
 
 _ACCESSORY_PATH_HINTS = (
     "op-lung", "op lung", "bao-da", "kinh-cuong-luc", "mieng-dan", "cap-", "sac-",
@@ -136,11 +169,137 @@ _ADVICE_QUESTION_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_REVIEWS_QUESTION_RE = re.compile(
+    r"\b("
+    r"review|đánh giá|danh gia|rating|"
+    r"review sao|mấy sao|may sao|bao nhiêu sao|bao nhieu sao|"
+    r"có tốt không|co tot khong|"
+    r"người dùng nói|nguoi dung noi|feedback"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAQ_POLICY_RE = re.compile(
+    r"\b("
+    r"chính sách|chinh sach|đổi trả|doi tra|"
+    r"1 đổi 1|hoàn tiền|hoan tien|"
+    r"quy định|quy dinh|faq"
+    r")\b",
+    re.IGNORECASE,
+)
+_FLASH_SALE_RE = re.compile(
+    r"\b("
+    r"flash sale|flashsale|giá sốc|gia soc|"
+    r"sale giờ vàng|khung giờ|slot"
+    r")\b",
+    re.IGNORECASE,
+)
+_TRADE_DEVICE_RE = re.compile(
+    r"\b("
+    r"máy cũ thu|may cu thu|thu máy|thu may|"
+    r"iphone \d+ cũ|thu bao nhiêu|thu bao nhieu|"
+    r"giá thu|gia thu|thu loại|thu loai"
+    r")\b",
+    re.IGNORECASE,
+)
+_STORE_LOCATOR_RE = re.compile(
+    r"\b("
+    r"cửa hàng ở|cua hang o|shop ở|shop o|"
+    r"địa chỉ shop|dia chi shop|"
+    r"giờ mở cửa|gio mo cua|"
+    r"cellphones ở|cellphones o|"
+    r"danh sách shop|danh sach shop|"
+    r"có mấy shop|co may shop"
+    r")\b",
+    re.IGNORECASE,
+)
+_COMBO_QUESTION_RE = re.compile(
+    r"\b("
+    r"combo|mua kèm|mua kem|"
+    r"mua thêm giảm|mua them giam|"
+    r"bundle|cross[- ]?sell"
+    r")\b",
+    re.IGNORECASE,
+)
 _INCOMING_STOCK_RE = re.compile(
     r"\b(hàng về|hang ve|khi nào về|khi nao ve|bao giờ về|bao gio ve|"
     r"pre[- ]?order|đặt trước|dat truoc)\b",
     re.IGNORECASE,
 )
+_STOCK_STATUS_QUESTION_RE = re.compile(
+    r"\b("
+    r"còn hàng|con hang|hết hàng|het hang|tạm hết|tam het|"
+    r"tình trạng hàng|tinh trang hang|trạng thái hàng|trang thai hang|"
+    r"có bán không|co ban khong|có hàng không|co hang khong|"
+    r"out of stock|in stock|"
+    r"đăng ký nhận tin|dang ky nhan tin|"
+    r"đặt trước được|dat truoc duoc|mua được không|mua duoc khong"
+    r")\b",
+    re.IGNORECASE,
+)
+_STOCK_STATUS_CHECK_ONLY_RE = re.compile(
+    r"còn hàng không|co hang khong|có hàng không|"
+    r"hết hàng chưa|het hang chua|"
+    r"tình trạng hàng|trang thai hang|"
+    r"có bán không|co ban khong|mua được không|mua duoc khong",
+    re.IGNORECASE,
+)
+
+_STOCK_BROWSE_KEYWORD_STRIP_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"đăng ký nhận tin|dang ky nhan tin", re.I),
+    re.compile(r"đặt trước|dat truoc|pre[- ]?order", re.I),
+    re.compile(r"drop\s*ship(?:ping)?", re.I),
+    re.compile(r"tồn ảo|ton ao|virtual\s*stock", re.I),
+    re.compile(
+        r"các sản phẩm|cac san pham|danh sách|danh sach|ds\s|list\s|"
+        r"sản phẩm|san pham|mặt hàng|mat hang",
+        re.I,
+    ),
+    re.compile(
+        r"(?:đang\s+)?hết hàng|(?:đang\s+)?het hang|"
+        r"(?:đang\s+)?còn hàng|(?:đang\s+)?con hang",
+        re.I,
+    ),
+    re.compile(
+        r"tìm|tim|xem|cho mình|cho minh|giúp mình|giup minh|"
+        r"liệt kê|liet ke|show|gợi ý|goi y",
+        re.I,
+    ),
+)
+
+_STOCK_ID_FROM_TEXT: list[tuple[re.Pattern[str], int]] = [
+    (
+        re.compile(r"đặt trước|dat truoc|pre[- ]?order", re.I),
+        STOCK_AVAILABLE_PRE_ORDER,
+    ),
+    (
+        re.compile(r"đăng ký nhận tin|dang ky nhan tin", re.I),
+        STOCK_AVAILABLE_SUBSCRIPTION,
+    ),
+    (
+        re.compile(r"drop\s*ship(?:ping)?", re.I),
+        STOCK_AVAILABLE_DROP_SHIPPING,
+    ),
+    (
+        re.compile(r"tồn ảo|ton ao|virtual\s*stock", re.I),
+        STOCK_AVAILABLE_VIRTUAL_STOCK,
+    ),
+    (
+        re.compile(
+            r"(?:sản phẩm|san pham|máy|may|hàng|hang)\s+(?:đang\s+)?hết hàng|"
+            r"(?:danh sách|ds|list)\s+hết hàng|(?:danh sách|ds)\s+het hang",
+            re.I,
+        ),
+        STOCK_AVAILABLE_OUT_OF_STOCK,
+    ),
+    (
+        re.compile(
+            r"(?:sản phẩm|san pham|máy|may|hàng|hang)\s+(?:đang\s+)?còn hàng|"
+            r"(?:danh sách|ds|list)\s+còn hàng|(?:danh sách|ds)\s+con hang",
+            re.I,
+        ),
+        STOCK_AVAILABLE_IN_STOCK,
+    ),
+]
 _SHOP_STOCK_QUESTION_RE = re.compile(
     r"\b("
     r"cửa hàng|cua hang|chi nhánh|chi nhanh|shop nào|shop nao|shop mình|shop minh|"
@@ -161,8 +320,15 @@ _DISTRICT_HINT_RE = re.compile(
     r"(?:gần|gan\s+)?"
     r"(quận|quan|huyện|huyen|phường|phuong)\s+"
     r"(\d{1,2}|[\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{2,20})"
-    r"(?=\s+(?:shop|có|co|còn|con|tìm|tim)\b|[?.!,]|\s|$)",
+    r"(?=\s+(?:shop|có|co|còn|con|tìm|tim|không|khong)\b|[?.!,]|\s|$)",
     re.IGNORECASE,
+)
+# Q.9, Q9, q 9 — cách viết phổ biến trên địa chỉ shop CellphoneS
+_DISTRICT_ABBREV_RE = re.compile(
+    r"\b[qQ]\.?\s*(\d{1,2})\b",
+)
+_WARD_ABBREV_RE = re.compile(
+    r"\b[pP]\.?\s*([\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{2,30})\b",
 )
 
 SHOPS_STOCK_QUERY = """
@@ -298,7 +464,7 @@ query GetProductsByCateId($cateId: String!, $provinceId: Int!, $size: Int!, $pag
         categories: [$cateId],
         province_id: $provinceId,
         stock: { from: 1 },
-        company_stock_id: [46, 152, 4920]
+        company_stock_id: [46, 152, 4920, 4164]
       }
     },
     page: $page,
@@ -333,6 +499,55 @@ query GetProductsByCateId($cateId: String!, $provinceId: Int!, $size: Int!, $pag
   }
 }
 """
+
+PRODUCTS_BY_STOCK_QUERY_TEMPLATE = """
+query GetProductsByStockId($provinceId: Int!, $size: Int!, $page: Int!) {
+  products(
+    filter: {
+      static: {
+        province_id: $provinceId,
+        stock: { from: 1 },
+        company_stock_id: __COMPANY_STOCK_IDS__
+      }
+    },
+    page: $page,
+    size: $size,
+    sort: [{view: desc}]
+  ) {
+    general {
+      product_id
+      name
+      sku
+      manufacturer
+      url_key
+      url_path
+      categories {
+        categoryId
+        name
+        uri
+      }
+    }
+    filterable {
+      stock_available_id
+      stock
+      price
+      special_price
+      display_price
+      promotion_information
+      thumbnail
+      short_description
+      product_state
+      promotion_info
+    }
+  }
+}
+"""
+
+
+def _build_products_by_stock_query(company_stock_ids: list[int]) -> str:
+    """Render query products theo company_stock_id dạng literal để tránh lỗi variable type."""
+    ids_literal = "[" + ", ".join(str(int(i)) for i in company_stock_ids) + "]"
+    return PRODUCTS_BY_STOCK_QUERY_TEMPLATE.replace("__COMPANY_STOCK_IDS__", ids_literal)
 
 
 def extract_cellphones_urls(text: str) -> list[str]:
@@ -428,44 +643,120 @@ def _parse_specifications(specification: dict[str, Any] | None) -> dict[str, str
     return specs
 
 
-def _format_stock_status(filterable: dict[str, Any]) -> str:
+def parse_stock_availability(filterable: dict[str, Any]) -> dict[str, Any]:
+    """
+    Chuẩn hóa trạng thái SP từ GraphQL filterable (stock_available_id + stock + product_state).
+    Tham chiếu stock-available.js trên frontend CellphoneS.
+    """
     product_state = _strip_html(str(filterable.get("product_state") or ""))
-    stock = filterable.get("stock")
-    stock_available_id = filterable.get("stock_available_id")
 
-    parts: list[str] = []
-    if product_state:
-        parts.append(product_state)
+    said: int | None = None
     try:
-        said = int(stock_available_id) if stock_available_id is not None else None
+        if filterable.get("stock_available_id") is not None:
+            said = int(filterable["stock_available_id"])
     except (TypeError, ValueError):
         said = None
-    if said == STOCK_AVAILABLE_PRE_ORDER and not product_state:
-        parts.append("Đặt trước / hàng về")
-    elif said == STOCK_AVAILABLE_OUT_OF_STOCK and not product_state:
-        parts.append("Tạm hết hàng")
 
-    if stock is not None:
+    stock_qty: int | None = None
+    if filterable.get("stock") is not None:
         try:
-            stock_num = int(stock)
-            if stock_num > 0:
-                parts.append(f"Còn hàng ({stock_num})")
-            elif not product_state and said != STOCK_AVAILABLE_PRE_ORDER:
-                parts.append("Tạm hết hàng")
+            stock_qty = int(filterable["stock"])
         except (TypeError, ValueError):
-            pass
-    elif stock_available_id is not None:
-        try:
-            if int(stock_available_id) in (
-                STOCK_AVAILABLE_IN_STOCK,
-                STOCK_AVAILABLE_PRE_ORDER,
-                4920,
-            ):
-                parts.append("Còn hàng")
-        except (TypeError, ValueError):
-            pass
+            stock_qty = None
 
-    return " — ".join(dict.fromkeys(parts)) if parts else "Không rõ"
+    status_code = STOCK_STATUS_CODES.get(said, "unknown") if said is not None else "unknown"
+    status_label = STOCK_STATUS_LABELS_VI.get(said, "") if said is not None else ""
+
+    display_parts: list[str] = []
+    if product_state:
+        display_parts.append(product_state)
+    elif status_label:
+        display_parts.append(status_label)
+
+    if said == STOCK_AVAILABLE_IN_STOCK:
+        if stock_qty is not None and stock_qty > 0:
+            qty_text = f"Còn hàng ({stock_qty})"
+            if product_state:
+                display_parts.append(f"Số lượng: {stock_qty}")
+            else:
+                display_parts = [qty_text]
+        elif not display_parts:
+            display_parts.append("Còn hàng")
+    elif said == STOCK_AVAILABLE_PRE_ORDER:
+        if stock_qty is not None and stock_qty > 0:
+            display_parts.append(f"SL đặt trước: {stock_qty}")
+        elif not display_parts:
+            display_parts.append("Đặt trước")
+    elif said == STOCK_AVAILABLE_OUT_OF_STOCK:
+        if not product_state:
+            display_parts = ["Hết hàng"]
+        if stock_qty is not None and stock_qty <= 0 and product_state:
+            display_parts.append("Hết hàng")
+    elif said == STOCK_AVAILABLE_SUBSCRIPTION:
+        if not product_state:
+            display_parts = ["Đăng ký nhận tin"]
+    elif said == STOCK_AVAILABLE_DROP_SHIPPING:
+        if stock_qty is not None and stock_qty > 0:
+            display_parts.append(f"Còn hàng Drop shipping ({stock_qty})")
+        elif not product_state:
+            display_parts.append("Còn hàng (Drop shipping)")
+    elif said == STOCK_AVAILABLE_VIRTUAL_STOCK:
+        if stock_qty is not None and stock_qty > 0:
+            display_parts.append(f"Còn hàng online ({stock_qty})")
+        elif not product_state:
+            display_parts.append("Còn hàng online")
+
+    if (
+        stock_qty is not None
+        and stock_qty <= 0
+        and said not in (
+            STOCK_AVAILABLE_PRE_ORDER,
+            STOCK_AVAILABLE_SUBSCRIPTION,
+            STOCK_AVAILABLE_OUT_OF_STOCK,
+        )
+        and not product_state
+    ):
+        display_parts.append("Tạm hết hàng")
+
+    display_status = " — ".join(dict.fromkeys(p for p in display_parts if p))
+    if not display_status:
+        display_status = status_label or "Không rõ"
+
+    is_out_of_stock = said == STOCK_AVAILABLE_OUT_OF_STOCK or (
+        stock_qty is not None and stock_qty <= 0 and said == STOCK_AVAILABLE_IN_STOCK
+    )
+    is_subscription = said == STOCK_AVAILABLE_SUBSCRIPTION
+    is_pre_order = said == STOCK_AVAILABLE_PRE_ORDER
+    is_in_stock = said in (
+        STOCK_AVAILABLE_IN_STOCK,
+        STOCK_AVAILABLE_VIRTUAL_STOCK,
+        STOCK_AVAILABLE_DROP_SHIPPING,
+    )
+    is_buyable_online = (
+        said in STOCK_BUYABLE_IDS
+        and not is_out_of_stock
+        and not is_subscription
+    )
+    if stock_qty is not None and stock_qty > 0 and said in STOCK_BUYABLE_IDS:
+        is_buyable_online = True
+
+    return {
+        "stock_available_id": said,
+        "status_code": status_code,
+        "status_label": status_label,
+        "product_state": product_state,
+        "stock_quantity": stock_qty,
+        "display_status": display_status,
+        "is_in_stock": is_in_stock,
+        "is_pre_order": is_pre_order,
+        "is_out_of_stock": is_out_of_stock,
+        "is_subscription": is_subscription,
+        "is_buyable_online": is_buyable_online,
+    }
+
+
+def _format_stock_status(filterable: dict[str, Any]) -> str:
+    return parse_stock_availability(filterable)["display_status"]
 
 
 # Nhãn hạng thành viên — tham chiếu cps-nuxt-standard/helper/function/prices.js
@@ -786,10 +1077,7 @@ def normalize_product_detail(
     except (TypeError, ValueError):
         company_stock_qty = None
 
-    try:
-        stock_available_id = int(filterable.get("stock_available_id") or 0)
-    except (TypeError, ValueError):
-        stock_available_id = None
+    stock_avail = parse_stock_availability(filterable)
 
     return {
         "name": general.get("name") or filterable.get("short_name") or "",
@@ -804,9 +1092,10 @@ def normalize_product_detail(
             )
         ),
         "specifications": _parse_specifications(specification),
-        "stock_status": _format_stock_status(filterable),
+        "stock_status": stock_avail["display_status"],
         "stock_quantity": stock_qty,
-        "stock_available_id": stock_available_id,
+        "stock_available_id": stock_avail["stock_available_id"],
+        "stock_availability": stock_avail,
         "company_stock_quantity": company_stock_qty,
         "url": product_url,
         "url_path": url_path,
@@ -942,6 +1231,250 @@ async def get_products_by_category_id(
     return payload.get("data", {}).get("products") or []
 
 
+async def get_products_by_stock_id(
+    company_stock_ids: list[int] | int,
+    *,
+    province_id: int | None = None,
+    size: int = 24,
+    page: int = 1,
+) -> list[dict[str, Any]]:
+    """
+    Danh sách SP theo trạng thái tồn — filter GraphQL giống query cate
+    nhưng bỏ categories, truyền company_stock_id.
+    """
+    if isinstance(company_stock_ids, int):
+        ids = [company_stock_ids]
+    else:
+        ids = [int(i) for i in company_stock_ids if i is not None]
+    if not ids:
+        return []
+
+    query = _build_products_by_stock_query(ids)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_V2_ENDPOINT,
+            query,
+            {
+                "provinceId": province_id if province_id is not None else CPS_PROVINCE_ID,
+                "size": size,
+                "page": page,
+            },
+        )
+    return payload.get("data", {}).get("products") or []
+
+
+def resolve_stock_filter_ids(text: str) -> list[int]:
+    """Trích company_stock_id từ câu tìm SP theo trạng thái."""
+    ids: list[int] = []
+    seen: set[int] = set()
+    for pattern, stock_id in _STOCK_ID_FROM_TEXT:
+        if pattern.search(text or "") and stock_id not in seen:
+            ids.append(stock_id)
+            seen.add(stock_id)
+    return ids
+
+
+def is_stock_status_browse_query(text: str) -> bool:
+    """
+    True khi khách muốn tìm/danh sách SP theo trạng thái (đặt trước, đăng ký nhận tin…),
+    không phải hỏi trạng thái của 1 SP đã biết tên.
+    """
+    if not resolve_stock_filter_ids(text):
+        return False
+    lower = (text or "").lower()
+    if _STOCK_STATUS_CHECK_ONLY_RE.search(lower):
+        if not re.search(
+            r"đặt trước|dat truoc|pre[- ]?order|đăng ký nhận tin|dang ky nhan tin",
+            lower,
+        ):
+            return False
+    return True
+
+
+def strip_stock_browse_phrases_for_keywords(text: str) -> str:
+    """Bóc cụm trạng thái tồn / browse để giữ tên SP (nếu có)."""
+    s = (text or "").strip()
+    for pattern in _STOCK_BROWSE_KEYWORD_STRIP_RES:
+        s = pattern.sub(" ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _graphql_product_to_search_record(item: dict[str, Any]) -> dict[str, Any]:
+    general = item.get("general") or {}
+    filterable = item.get("filterable") or {}
+    url_path = str(general.get("url_path") or "")
+    sale_price, _ = _resolve_standard_prices(filterable)
+    thumb = filterable.get("thumbnail") or ""
+    if thumb and not str(thumb).startswith("http"):
+        thumb = _full_url(str(thumb))
+    stock_avail = parse_stock_availability(filterable)
+    return normalize_search_result(
+        {
+            "name": general.get("name") or "",
+            "price": _format_price(sale_price),
+            "url_path": url_path,
+            "url_key": general.get("url_key") or "",
+            "url": graphql_product_url(general),
+            "thumbnail": thumb,
+            "product_id": str(general.get("product_id") or ""),
+            "stock_available_id": stock_avail.get("stock_available_id"),
+            "stock_status": stock_avail.get("display_status") or "",
+        }
+    )
+
+
+async def _fetch_product_by_stock_filter(
+    keywords: str,
+    user_message: str,
+    *,
+    province_id: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Tìm SP qua GraphQL products + company_stock_id (không categories)."""
+    if not is_stock_status_browse_query(user_message):
+        return None
+    stock_ids = resolve_stock_filter_ids(user_message)
+    if not stock_ids:
+        return None
+
+    pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
+    products = await get_products_by_stock_id(
+        stock_ids,
+        province_id=pid_province,
+        size=24,
+    )
+    if not products:
+        return None
+
+    search_results = [_graphql_product_to_search_record(p) for p in products[:12]]
+    keyword_tokens = _keyword_tokens(keywords)
+    list_mode = not keyword_tokens
+
+    if list_mode:
+        detail = _build_stock_browse_summary(stock_ids, search_results, pid_province)
+        return search_results, detail
+
+    selected = _pick_best_category_product(
+        products,
+        request_path="",
+        keywords=keywords,
+    )
+    if not selected:
+        detail = _build_stock_browse_summary(stock_ids, search_results, pid_province)
+        return search_results, detail
+
+    product_id = (selected.get("general") or {}).get("product_id")
+    if not product_id:
+        detail = _build_stock_browse_summary(stock_ids, search_results, pid_province)
+        return search_results, detail
+
+    product = await get_product_by_id(product_id, province_id=pid_province)
+    if not product:
+        detail = _build_stock_browse_summary(stock_ids, search_results, pid_province)
+        return search_results, detail
+
+    url_path = str((selected.get("general") or {}).get("url_path") or "")
+    detail = normalize_product_detail(
+        product,
+        url=_full_url(url_path) if url_path else "",
+    )
+    detail["stock_filter_ids"] = stock_ids
+    detail["stock_browse_list_mode"] = False
+    return search_results, detail
+
+
+def _build_stock_browse_summary(
+    stock_ids: list[int],
+    search_results: list[dict[str, Any]],
+    province_id: int,
+) -> dict[str, Any]:
+    """Payload tóm tắt khi khách browse theo trạng thái — không deep-dive 1 SP."""
+    labels = [
+        STOCK_STATUS_LABELS_VI.get(sid, str(sid)) for sid in stock_ids
+    ]
+    prov_name = PROVINCE_ID_TO_NAME.get(province_id, "")
+    return {
+        "name": f"Danh sách sản phẩm — {', '.join(labels)}",
+        "price": "",
+        "old_price": "",
+        "description": (
+            f"Có {len(search_results)} sản phẩm khớp trạng thái "
+            f"{', '.join(labels)}"
+            + (f" tại {prov_name}" if prov_name else "")
+            + "."
+        ),
+        "specifications": {},
+        "stock_status": labels[0] if labels else "",
+        "url": "",
+        "thumbnail": "",
+        "product_id": "",
+        "stock_filter_ids": stock_ids,
+        "stock_browse_list_mode": True,
+        "product_count": len(search_results),
+    }
+
+
+def _build_budget_browse_summary(
+    constraint: Any,
+    search_results: list[dict[str, Any]],
+    province_id: int,
+) -> dict[str, Any]:
+    """Payload tóm tắt khi khách browse theo ngân sách — danh sách SP."""
+    label = constraint.label if hasattr(constraint, "label") else ""
+    category = getattr(constraint, "category", "") or "sản phẩm"
+    prov_name = PROVINCE_ID_TO_NAME.get(province_id, "")
+    return {
+        "name": f"{category.title()} {label}".strip(),
+        "price": "",
+        "old_price": "",
+        "description": (
+            f"Có {len(search_results)} sản phẩm {category}"
+            + (f" trong tầm {label}" if label else "")
+            + (f" tại {prov_name}" if prov_name else "")
+            + "."
+        ),
+        "specifications": {},
+        "stock_status": "",
+        "url": "",
+        "thumbnail": "",
+        "product_id": "",
+        "budget_browse_list_mode": True,
+        "budget_label": label,
+        "budget_category": category,
+        "product_count": len(search_results),
+    }
+
+
+async def _fetch_products_by_budget_browse(
+    keywords: str,
+    user_message: str,
+    *,
+    province_id: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Tìm SP theo danh mục + lọc giá từ câu hỏi."""
+    if not is_budget_browse_query(user_message):
+        return None
+
+    constraint = parse_budget_constraint(user_message)
+    if not constraint:
+        return None
+
+    search_kw = (
+        keywords.strip()
+        or constraint.category
+        or strip_budget_phrases_for_keywords(user_message)
+        or "điện thoại"
+    )
+    results = await search_products(search_kw, province_id=province_id, limit=24)
+
+    filtered = filter_results_by_budget(results, constraint)
+    if not filtered:
+        return None
+
+    detail = _build_budget_browse_summary(constraint, filtered[:12], province_id)
+    return filtered[:12], detail
+
+
 def _pick_best_category_product(
     products: list[dict[str, Any]],
     *,
@@ -1025,6 +1558,188 @@ def _pick_best_search_result(
         return points
 
     return max(results, key=score)
+
+
+_VARIANT_STORAGE_RE = re.compile(
+    r"\b(64|128|256|512|1024|1tb|2tb)\s*(?:gb|tb)?\b",
+    re.IGNORECASE,
+)
+_VARIANT_COLOR_HINTS: tuple[tuple[str, ...], ...] = (
+    ("titan", "titan tự nhiên", "titan tu nhien", "natural titanium"),
+    ("titan đen", "titan den", "black titanium", "đen titan"),
+    ("titan trắng", "titan trang", "white titanium", "trắng titan"),
+    ("titan sa mạc", "titan sa mac", "desert titanium"),
+    ("hồng", "hong", "pink"),
+    ("xanh", "blue", "xanh dương"),
+    ("xanh lá", "xanh la", "green"),
+    ("tím", "tim", "purple", "titan tím"),
+    ("vàng", "vang", "gold"),
+    ("đen", "den", "black"),
+    ("trắng", "trang", "white"),
+    ("bạc", "bac", "silver"),
+)
+
+
+def _extract_variant_hints(keywords: str) -> list[str]:
+    hints: list[str] = []
+    lower = (keywords or "").lower()
+    for match in _VARIANT_STORAGE_RE.finditer(lower):
+        val = match.group(1).lower()
+        if val in {"1tb", "1024"}:
+            hints.append("1tb")
+        elif val == "2tb":
+            hints.append("2tb")
+        else:
+            hints.append(f"{val}gb")
+    for aliases in _VARIANT_COLOR_HINTS:
+        for alias in aliases:
+            if alias in lower:
+                hints.append(aliases[0])
+                break
+    return hints
+
+
+def _variant_hint_score(name: str, hints: list[str]) -> int:
+    if not hints:
+        return 0
+    text = name.lower()
+    score = 0
+    for hint in hints:
+        if hint in text or hint.replace(" ", "") in text.replace(" ", ""):
+            score += 10
+        elif hint.endswith("gb") and hint[:-2] in text:
+            score += 8
+    return score
+
+
+def _collect_up_sell_ids(detail: dict[str, Any]) -> list[int]:
+    ids: list[int] = []
+    up_sell = detail.get("up_sell") or []
+    if isinstance(up_sell, list):
+        for item in up_sell:
+            if isinstance(item, dict):
+                raw = item.get("product_id") or item.get("id")
+            else:
+                raw = item
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if pid not in ids:
+                ids.append(pid)
+    current = detail.get("product_id")
+    try:
+        current_int = int(current) if current else 0
+    except (TypeError, ValueError):
+        current_int = 0
+    if current_int and current_int not in ids:
+        ids.insert(0, current_int)
+    return ids
+
+
+def _build_products_by_ids_query(product_ids: list[int]) -> str:
+    ids_literal = ", ".join(str(i) for i in product_ids)
+    return f"""
+query GetProductsByIds($provinceId: Int!) {{
+  products(
+    filter: {{
+      static: {{
+        province_id: $provinceId,
+        product_id: [{ids_literal}],
+        stock: {{ from: 0 }}
+      }}
+    }},
+    size: {len(product_ids)}
+  ) {{
+    general {{
+      product_id
+      name
+      url_path
+      sku
+      attributes
+    }}
+    filterable {{
+      stock_available_id
+      price
+      special_price
+      display_price
+      thumbnail
+    }}
+  }}
+}}
+"""
+
+
+async def get_products_by_ids(
+    product_ids: list[int],
+    *,
+    province_id: int | None = None,
+) -> list[dict[str, Any]]:
+    ids = [int(i) for i in product_ids if i is not None]
+    if not ids:
+        return []
+    query = _build_products_by_ids_query(ids)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_V2_ENDPOINT,
+            query,
+            {"provinceId": province_id if province_id is not None else CPS_PROVINCE_ID},
+        )
+    return payload.get("data", {}).get("products") or []
+
+
+async def resolve_product_variant(
+    keywords: str,
+    detail: dict[str, Any],
+    *,
+    province_id: int | None = None,
+) -> dict[str, Any]:
+    """Chọn biến thể (màu/dung lượng) khớp từ khóa — tham chiếu up_sell / sibling SKUs."""
+    hints = _extract_variant_hints(keywords)
+    if not hints:
+        return detail
+    if _variant_hint_score(detail.get("name") or "", hints) >= len(hints) * 10:
+        return detail
+
+    candidate_ids = _collect_up_sell_ids(detail)
+    if len(candidate_ids) <= 1:
+        return detail
+
+    products = await get_products_by_ids(candidate_ids, province_id=province_id)
+    if not products:
+        return detail
+
+    best_item: dict[str, Any] | None = None
+    best_score = _variant_hint_score(detail.get("name") or "", hints)
+    pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
+
+    for item in products:
+        general = item.get("general") or {}
+        name = str(general.get("name") or "")
+        score = _variant_hint_score(name, hints)
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    if not best_item:
+        return detail
+
+    product_id = (best_item.get("general") or {}).get("product_id")
+    if not product_id:
+        return detail
+
+    product = await get_product_by_id(product_id, province_id=pid_province)
+    if not product:
+        return detail
+
+    url_path = str((best_item.get("general") or {}).get("url_path") or "")
+    resolved = normalize_product_detail(
+        product,
+        url=_full_url(url_path) if url_path else detail.get("url") or "",
+    )
+    resolved["variant_resolved_from"] = detail.get("product_id")
+    return resolved
 
 
 def _parse_shop_stock_from_nuxt(html: str) -> list[dict[str, Any]]:
@@ -1187,14 +1902,74 @@ async def fetch_product_for_query(
             stats["cps_url_info_calls"] += 1
             stats["cps_product_detail_calls"] += 1
             detail = await fetch_product_from_url(target_url, keywords=keywords)
+            if detail and keywords:
+                province_id = resolve_province_from_text(user_message)
+                detail = await resolve_product_variant(
+                    keywords,
+                    detail,
+                    province_id=province_id,
+                )
         except Exception as exc:
             logger.warning("CPS fetch thất bại (%s): %s", target_url, exc)
             return [], {}, stats
     else:
-        # Layer 1: SerpAPI trước (có thể tắt bằng SERPAPI_ENABLED=0)
+        province_id = resolve_province_from_text(user_message) or CPS_PROVINCE_ID
+        stock_hit = await _fetch_product_by_stock_filter(
+            keywords,
+            user_message,
+            province_id=province_id,
+        )
+        if stock_hit:
+            search_results, detail = stock_hit
+            stats["resolve_source"] = "stock_status_filter"
+            stats["stock_filter_ids"] = detail.get("stock_filter_ids") or []
+            if not detail.get("stock_browse_list_mode"):
+                stats["cps_product_detail_calls"] += 1
+
+        if not detail:
+            budget_hit = await _fetch_products_by_budget_browse(
+                keywords,
+                user_message,
+                province_id=province_id,
+            )
+            if budget_hit:
+                search_results, detail = budget_hit
+                stats["resolve_source"] = "budget_browse"
+                stats["budget_label"] = detail.get("budget_label") or ""
+
+        # Layer 1: CPS search (advanced_search → quick_search fallback)
+        if not detail and keywords:
+            stats["search_products_calls"] += 1
+            search_results = await search_products(
+                keywords,
+                province_id=province_id,
+            )
+            if search_results:
+                stats["resolve_source"] = "search_results"
+                best = _pick_best_search_result(search_results, keywords)
+                pick_url = product_url_from_record(best or search_results[0])
+                if pick_url:
+                    try:
+                        stats["cps_url_info_calls"] += 1
+                        stats["cps_product_detail_calls"] += 1
+                        detail = await fetch_product_from_url(pick_url, keywords=keywords)
+                        if detail and keywords:
+                            detail = await resolve_product_variant(
+                                keywords,
+                                detail,
+                                province_id=province_id,
+                            )
+                    except Exception as exc:
+                        logger.warning("CPS fetch thất bại (%s): %s", pick_url, exc)
+                if len(search_results) >= 2 and search_results_need_advanced(
+                    search_results[:2], keywords
+                ):
+                    stats["ambiguous_search"] = True
+
+        # Layer 2: SerpAPI (chỉ khi CPS search không có kết quả)
         serp_urls: list[str] = []
         use_serp = SERPAPI_ENABLED and bool(SERPAPI_API_KEY)
-        if use_serp:
+        if not detail and use_serp:
             stats["serpapi_calls"] += 1
             try:
                 query = f"site:cellphones.com.vn {keywords}".strip()
@@ -1216,7 +1991,7 @@ async def fetch_product_for_query(
             except Exception as exc:
                 logger.warning("SerpAPI lỗi: %s", exc)
 
-        if serp_urls:
+        if not detail and serp_urls:
             stats["resolve_source"] = "serpapi"
             for url in serp_urls:
                 try:
@@ -1224,42 +1999,106 @@ async def fetch_product_for_query(
                     stats["cps_product_detail_calls"] += 1
                     detail = await fetch_product_from_url(url, keywords=keywords)
                     if detail:
+                        if keywords:
+                            detail = await resolve_product_variant(
+                                keywords,
+                                detail,
+                                province_id=province_id,
+                            )
                         break
                 except Exception as exc:
                     logger.warning("CPS fetch thất bại (%s): %s", url, exc)
-
-        # Layer 2: fallback quick_search (Serp tắt / không key / hoặc SERPAPI_FALLBACK_TO_CPS_SEARCH=1)
-        if not detail and (not use_serp or SERPAPI_FALLBACK_TO_CPS_SEARCH):
-            stats["search_products_calls"] += 1
-            search_results = await search_products(keywords)
-            if search_results:
-                stats["resolve_source"] = "search_results"
-                best = _pick_best_search_result(search_results, keywords)
-                pick_url = product_url_from_record(best or search_results[0])
-                if pick_url:
-                    try:
-                        stats["cps_url_info_calls"] += 1
-                        stats["cps_product_detail_calls"] += 1
-                        detail = await fetch_product_from_url(pick_url, keywords=keywords)
-                    except Exception as exc:
-                        logger.warning("CPS fetch thất bại (%s): %s", pick_url, exc)
 
     if not detail:
         return search_results, {}, stats
 
     if not search_results:
         search_results = [
-            {
-                "name": detail.get("name", ""),
-                "price": detail.get("price", ""),
-                "url_path": detail.get("url_path", ""),
-                "url": detail.get("url", ""),
-                "thumbnail": detail.get("thumbnail", ""),
-                "product_id": detail.get("product_id", ""),
-            }
+            normalize_search_result(
+                {
+                    "name": detail.get("name", ""),
+                    "price": detail.get("price", ""),
+                    "url_path": detail.get("url_path", ""),
+                    "url": detail.get("url", ""),
+                    "thumbnail": detail.get("thumbnail", ""),
+                    "product_id": detail.get("product_id", ""),
+                }
+            )
         ]
+    else:
+        search_results = normalize_search_results(search_results)
 
     return search_results, detail, stats
+
+
+_SHOP_STOCK_KEYWORD_STRIP_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"^(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\s+"
+        r"(?:gần|gan\s+)?(?:quận|quan|huyện|huyen|phường|phuong)\s+\d+\s+"
+        r"(?:còn|co(?:\s+hàng|\s+hang)?)\s+",
+        re.I,
+    ),
+    re.compile(
+        r"^(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\s+"
+        r"(?:quận|quan|huyện|huyen|phường|phuong)\s+\d+\s+"
+        r"(?:còn|co(?:\s+hàng|\s+hang)?)\s+",
+        re.I,
+    ),
+    re.compile(
+        r"^(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\s+"
+        r"(?:gần|gan\s+)?[qQ]\.?\s*\d+\s+"
+        r"(?:còn|co(?:\s+hàng|\s+hang)?)\s+",
+        re.I,
+    ),
+    re.compile(
+        r"^(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\s+"
+        r"(?:gần|gan\s+)?(?:tôi|toi|mình|minh|đây|day)\s+"
+        r"(?:còn|co(?:\s+hàng|\s+hang)?)\s+",
+        re.I,
+    ),
+    re.compile(r"(?:gần|gan)\s+(?:quận|quan|huyện|huyen|phường|phuong)\s+\d+", re.I),
+    re.compile(r"(?:gần|gan)\s+[qQ]\.?\s*\d+", re.I),
+    re.compile(r"\s+(?:ở|o)\s+(?:shop|cửa hàng|cua hang|quận|quan)\b[^.?]*", re.I),
+    re.compile(r"\s+(?:còn|có|co)\s+(?:hàng|hang)\s*(?:không|khong|ko|k)\??\s*$", re.I),
+    re.compile(r"\s+(?:không|khong|ko|k)\??\s*$", re.I),
+)
+
+_SHOP_STOCK_PRODUCT_AFTER_CON_RE = re.compile(
+    r"(?:còn|co)(?:\s+hàng|\s+hang)?\s+(.+?)\s*(?:"
+    r"(?:không|khong|ko|k)\??|"
+    r"(?:ở|o)\s+(?:shop|cửa hàng|cua hang|quận|quan)"
+    r")(?:\s|$|\?)",
+    re.I,
+)
+
+
+def needs_shop_stock_keyword_strip(text: str) -> bool:
+    """Câu hỏi tồn cửa hàng / shop theo khu vực — cần bóc tên SP trước khi search."""
+    if is_shop_stock_question(text):
+        return True
+    lower = (text or "").lower()
+    has_shop = bool(re.search(r"\b(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\b", lower))
+    has_stock_ask = bool(re.search(r"\b(?:còn|co|không|khong)\b", lower))
+    has_district = bool(_DISTRICT_HINT_RE.search(text or "") or _DISTRICT_ABBREV_RE.search(text or ""))
+    return (has_shop and has_stock_ask) or (has_district and has_stock_ask and has_shop)
+
+
+def strip_shop_stock_phrases_for_keywords(text: str) -> str:
+    """Bóc cụm shop/khu vực/tồn — chỉ giữ tên sản phẩm cho API search."""
+    s = (text or "").strip().rstrip("?").strip()
+    if not s:
+        return ""
+
+    match = _SHOP_STOCK_PRODUCT_AFTER_CON_RE.search(s)
+    if match:
+        product = match.group(1).strip()
+        product = re.sub(r"^(?:hàng|hang)\s+", "", product, flags=re.I)
+        if product:
+            return product
+
+    for pattern in _SHOP_STOCK_KEYWORD_STRIP_RES:
+        s = pattern.sub(" ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def is_shop_stock_question(text: str) -> bool:
@@ -1280,24 +2119,16 @@ def classify_question_scenarios(text: str) -> dict[str, bool]:
         "specs": bool(_SPECS_QUESTION_RE.search(value)),
         "advice": bool(_ADVICE_QUESTION_RE.search(value)),
         "incoming_stock": bool(_INCOMING_STOCK_RE.search(value)),
+        "stock_status": bool(_STOCK_STATUS_QUESTION_RE.search(value)),
+        "stock_browse": is_stock_status_browse_query(value),
+        "budget_browse": is_budget_browse_query(value),
+        "reviews": bool(_REVIEWS_QUESTION_RE.search(value)),
+        "faq_policy": bool(_FAQ_POLICY_RE.search(value)),
+        "flash_sale": bool(_FLASH_SALE_RE.search(value)),
+        "trade_in_device": bool(_TRADE_DEVICE_RE.search(value)),
+        "store_locator": bool(_STORE_LOCATOR_RE.search(value)),
+        "combo": bool(_COMBO_QUESTION_RE.search(value)),
     }
-
-
-def company_id_for_province(province_id: int) -> int:
-    return PROVINCE_COMPANY_ID.get(province_id, PROVINCE_COMPANY_ID.get(CPS_PROVINCE_ID, 12869))
-
-
-def resolve_province_from_text(text: str) -> int | None:
-    """Trích tỉnh/thành từ câu hỏi (vd: Hà Nội, HCM)."""
-    lower = (text or "").lower()
-    for alias, pid in sorted(
-        PROVINCE_NAME_ALIASES.items(),
-        key=lambda item: len(item[0]),
-        reverse=True,
-    ):
-        if alias in lower:
-            return pid
-    return None
 
 
 async def fetch_trade_promo_for_product(
@@ -1447,14 +2278,20 @@ async def enrich_payload_for_scenarios(
     detail: dict[str, Any],
     *,
     user_question: str = "",
+    province_id: int | None = None,
 ) -> dict[str, bool]:
     """Bổ sung dữ liệu theo kịch bản CSV; trả về flags đã fetch."""
     scenarios = classify_question_scenarios(user_question)
     payload["question_scenarios"] = scenarios
     fetched: dict[str, bool] = {}
+    pid = (
+        province_id
+        if province_id is not None
+        else resolve_province_from_text(user_question) or CPS_PROVINCE_ID
+    )
 
     if scenarios.get("trade_in") or scenarios.get("price_promotion"):
-        trade = await fetch_trade_promo_for_product(detail)
+        trade = await fetch_trade_promo_for_product(detail, province_id=pid)
         if trade:
             payload["trade_promo"] = trade
             fetched["trade_promo"] = True
@@ -1466,7 +2303,10 @@ async def enrich_payload_for_scenarios(
             fetched["extended_warranty"] = True
 
     if scenarios.get("shop_stock") and detail.get("product_id"):
-        other = await fetch_instock_other_provinces(detail["product_id"])
+        other = await fetch_instock_other_provinces(
+            detail["product_id"],
+            province_id=pid,
+        )
         if other:
             payload["instock_other_provinces"] = other
             fetched["instock_other_provinces"] = True
@@ -1482,17 +2322,39 @@ async def enrich_payload_for_scenarios(
             payload["installment"] = installment_ctx
             fetched["installment"] = True
 
-    if scenarios.get("warranty") and not detail.get("warranty_information"):
-        payload["policy_note"] = (
-            "Chính sách đổi trả chi tiết (7 ngày, 1 đổi 1) nằm trên website CellphoneS; "
-            "bot chỉ có warranty_information và gói BH mở rộng từ API sản phẩm."
+    if scenarios.get("store_locator"):
+        from cps_store import fetch_store_locator_context
+
+        store_ctx = await fetch_store_locator_context(
+            user_question,
+            province_id=pid,
         )
+        if store_ctx:
+            payload["store_locator"] = store_ctx
+            fetched["store_locator"] = True
+
+    from cps_enrich import enrich_extended_scenarios
+
+    extended = await enrich_extended_scenarios(
+        payload,
+        detail,
+        scenarios,
+        province_id=pid,
+    )
+    fetched.update(extended)
+
+    if scenarios.get("warranty") and not detail.get("warranty_information"):
+        if not payload.get("product_faqs"):
+            payload["policy_note"] = (
+                "Chính sách đổi trả chi tiết (7 ngày, 1 đổi 1) nằm trên website CellphoneS; "
+                "bot chỉ có warranty_information và gói BH mở rộng từ API sản phẩm."
+            )
 
     return fetched
 
 
 def extract_location_hint(text: str) -> str:
-    """Trích gợi ý địa điểm từ câu hỏi (vd: gần 288 3 tháng 2, quận 10)."""
+    """Trích gợi ý địa điểm từ câu hỏi (vd: gần 288 3 tháng 2, quận 10, Q.9)."""
     value = (text or "").strip()
     if re.search(r"gần nhất|gan nhat", value, re.IGNORECASE):
         return ""
@@ -1502,26 +2364,85 @@ def extract_location_hint(text: str) -> str:
     district = _DISTRICT_HINT_RE.search(value)
     if district:
         return f"{district.group(1)} {district.group(2)}".strip()
+    abbrev = _DISTRICT_ABBREV_RE.search(value)
+    if abbrev:
+        return f"quận {abbrev.group(1)}"
     return ""
 
 
 def _location_tokens(hint: str) -> list[str]:
     if not hint:
         return []
-    normalized = re.sub(r"[^\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ\s]", " ", hint.lower())
-    return [t for t in normalized.split() if len(t) >= 2]
+    normalized = re.sub(
+        r"[^\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ\s]",
+        " ",
+        hint.lower(),
+    )
+    return [
+        t
+        for t in normalized.split()
+        if len(t) >= 2 or (t.isdigit() and len(t) >= 1)
+    ]
 
 
-def _shop_matches_location(shop: dict[str, Any], hint: str) -> bool:
-    tokens = _location_tokens(hint)
-    if not tokens:
-        return True
-    haystack = " ".join(
+def _extract_district_number(hint: str) -> str | None:
+    """Trích số quận/huyện từ hint: quận 9, Q.9, Q9 → '9'."""
+    value = (hint or "").strip().lower()
+    if not value:
+        return None
+    for pattern in (
+        r"(?:quận|quan|huyện|huyen)\s*(\d{1,2})\b",
+        r"\bq\.?\s*(\d{1,2})\b",
+        r"\bq(\d{1,2})\b",
+    ):
+        match = re.search(pattern, value, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _haystack_for_shop(shop: dict[str, Any]) -> str:
+    return " ".join(
         [
             str(shop.get("address") or ""),
             str(shop.get("near") or ""),
+            str(shop.get("district_name") or ""),
         ]
     ).lower()
+
+
+def _shop_matches_district_number(haystack: str, district_num: str) -> bool:
+    """Khớp quận số — địa chỉ CPS thường ghi Q.9, Q9 thay vì 'quận 9'."""
+    compact = re.sub(r"[.,]", " ", haystack.lower())
+    compact = re.sub(r"\s+", " ", compact).strip()
+    patterns = (
+        f"q {district_num}",
+        f"q.{district_num}",
+        f"q{district_num}",
+        f"quận {district_num}",
+        f"quan {district_num}",
+        f"huyện {district_num}",
+        f"huyen {district_num}",
+    )
+    return any(p in compact or p in haystack.lower() for p in patterns)
+
+
+def _shop_matches_location(shop: dict[str, Any], hint: str) -> bool:
+    if not hint:
+        return True
+    haystack = _haystack_for_shop(shop)
+
+    district_num = _extract_district_number(hint)
+    if district_num:
+        if _shop_matches_district_number(haystack, district_num):
+            return True
+        # Hint có số quận nhưng shop không khớp → loại (tránh nhầm quận khác)
+        if re.search(r"(?:quận|quan|q\.?)\s*\d", hint, re.IGNORECASE):
+            return False
+
+    tokens = _location_tokens(hint)
+    if not tokens:
+        return True
     return all(token in haystack for token in tokens)
 
 
@@ -1598,6 +2519,7 @@ async def fetch_shop_stock_context(
     url_path: str = "",
     online_stock_status: str = "",
     online_stock_quantity: int | None = None,
+    online_stock_availability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Gói dữ liệu tồn cửa hàng cho Gemini / trả lời trực tiếp.
@@ -1620,9 +2542,18 @@ async def fetch_shop_stock_context(
         province_name = districts[0].get("province_name") or province_name
 
     total_shops = len(_flatten_shops(districts))
-    online_available = bool(
-        online_stock_quantity and online_stock_quantity > 0
-    ) or bool(re.search(r"còn hàng|con hang", online_stock_status or "", re.I))
+    stock_avail = online_stock_availability or {}
+    online_available = bool(stock_avail.get("is_buyable_online"))
+    if not online_available:
+        online_available = bool(
+            online_stock_quantity and online_stock_quantity > 0
+        ) or bool(
+            re.search(
+                r"còn hàng|con hang|đặt trước|dat truoc|drop shipping",
+                online_stock_status or "",
+                re.I,
+            )
+        )
 
     return {
         "scenario": "shop_stock",
@@ -1633,6 +2564,7 @@ async def fetch_shop_stock_context(
         "location_hint": location_hint,
         "online_stock_status": online_stock_status,
         "online_stock_quantity": online_stock_quantity,
+        "online_stock_availability": stock_avail,
         "online_stock_available": online_available,
         "total_shops_in_province": total_shops,
         "matched_shops_count": len(shops),
@@ -1646,13 +2578,17 @@ async def attach_shop_stock_to_payload(
     detail: dict[str, Any],
     *,
     user_question: str = "",
+    province_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Lấy tồn cửa hàng + tồn online và gắn vào payload."""
     product_id = detail.get("product_id")
     if not product_id:
         return None
 
-    stock_status = str(detail.get("stock_status") or "")
+    stock_avail = detail.get("stock_availability") or {}
+    stock_status = str(
+        detail.get("stock_status") or stock_avail.get("display_status") or ""
+    )
     stock_qty = detail.get("stock_quantity")
     qty: int | None
     try:
@@ -1663,17 +2599,24 @@ async def attach_shop_stock_to_payload(
     payload["online_stock"] = {
         "stock_status": stock_status,
         "stock_quantity": qty,
+        "stock_available_id": detail.get("stock_available_id"),
+        "stock_availability": stock_avail,
     }
 
-    province_id = resolve_province_from_text(user_question) or CPS_PROVINCE_ID
+    pid = (
+        province_id
+        if province_id is not None
+        else resolve_province_from_text(user_question) or CPS_PROVINCE_ID
+    )
     shop_ctx = await fetch_shop_stock_context(
         product_id,
         user_question=user_question,
-        province_id=province_id,
+        province_id=pid,
         product_name=detail.get("name") or "",
         url_path=str(detail.get("url_path") or ""),
         online_stock_status=stock_status,
         online_stock_quantity=qty,
+        online_stock_availability=stock_avail,
     )
     if (
         shop_ctx.get("total_shops_in_province")

@@ -33,6 +33,8 @@ LARK_THREAD_AUTO_REPLY = os.getenv("LARK_THREAD_AUTO_REPLY", "1").strip().lower(
     "yes",
     "on",
 }
+# Tên hiển thị bot khi @ (phân cách bằng dấu phẩy) — vd: Snake Bot,Gemini Bot
+LARK_BOT_MENTION_NAMES = os.getenv("LARK_BOT_MENTION_NAMES", "").strip()
 # Lark Base — lưu feedback từ nút card
 LARK_BITABLE_ENABLED = os.getenv("LARK_BITABLE_ENABLED", "0").strip().lower() in {
     "1",
@@ -81,6 +83,30 @@ CPS_GRAPHQL_DASHBOARD_ENDPOINT = os.getenv(
     "CPS_GRAPHQL_DASHBOARD_ENDPOINT",
     "https://api.cellphones.com.vn/graphql-dashboard/graphql/query",
 ).strip()
+CPS_GRAPHQL_CUSTOMER_ENDPOINT = os.getenv(
+    "CPS_GRAPHQL_CUSTOMER_ENDPOINT",
+    "https://api.cellphones.com.vn/graphql-customer/graphql/query",
+).strip()
+
+# Main menu → category map (url_info, throttle + sync 0h hàng ngày)
+CPS_MAIN_MENU_ID = int(os.getenv("CPS_MAIN_MENU_ID", "5"))
+MENU_CATEGORY_FETCH_DELAY_SEC = float(os.getenv("MENU_CATEGORY_FETCH_DELAY_SEC", "3"))
+MENU_CATEGORY_MAP_PATH = os.getenv(
+    "MENU_CATEGORY_MAP_PATH",
+    str(Path(__file__).resolve().parent / "data" / "menu_category_map.json"),
+).strip()
+
+# Session persistence (SQLite) — giữ context qua restart
+SESSION_PERSISTENCE = os.getenv("SESSION_PERSISTENCE", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+SESSION_DB_PATH = os.getenv(
+    "SESSION_DB_PATH",
+    str(Path(__file__).resolve().parent / "sessions.db"),
+).strip()
 
 # Cart / Payment / SSO — trả góp (cps-nuxt-standard .prod.env)
 CPS_API_BASE_URL = os.getenv(
@@ -93,8 +119,8 @@ CPS_SSO_GUEST_TOKEN_URL = os.getenv(
     "https://api.smember.com.vn/sso/v1/auth/guest-token",
 ).strip()
 
-# SerpAPI Google search (site:cellphones.com.vn)
-SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
+# SerpAPI Google search (site:cellphones.com.vn) — mặc định tắt; ưu tiên CPS advanced_search
+SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "0").strip() in {"1", "true", "yes", "on"}
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 SERPAPI_ENDPOINT = os.getenv("SERPAPI_ENDPOINT", "https://serpapi.com/search.json").strip()
 SERPAPI_FALLBACK_TO_CPS_SEARCH = os.getenv(
@@ -102,7 +128,7 @@ SERPAPI_FALLBACK_TO_CPS_SEARCH = os.getenv(
     "0",
 ).strip() in {"1", "true", "yes", "on"}
 
-# LLM: gemini | deepseek
+# LLM: gemini | deepseek | byteplus
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 
 # Model Gemini — mặc định gemini-3.5-flash (GA, khuyến nghị production 2026-05)
@@ -114,4 +140,30 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
 DEEPSEEK_BASE_URL = os.getenv(
     "DEEPSEEK_BASE_URL",
     "https://api.deepseek.com/v1",
+).strip()
+
+# BytePlus ModelArk (OpenAI-compatible) — dùng khi LLM_PROVIDER=byteplus
+# BYTEPLUS_API_MODE: modelark (mặc định) | coding (Coding Plan subscription)
+BYTEPLUS_API_MODE = os.getenv("BYTEPLUS_API_MODE", "modelark").strip().lower()
+BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY", "").strip()
+
+
+def _byteplus_default_base_url() -> str:
+    if BYTEPLUS_API_MODE == "coding":
+        return "https://ark.ap-southeast.bytepluses.com/api/coding/v3"
+    return "https://ark.ap-southeast.bytepluses.com/api/v3"
+
+
+def _byteplus_default_model() -> str:
+    if BYTEPLUS_API_MODE == "coding":
+        return "ark-code-latest"
+    return ""
+
+
+BYTEPLUS_MODEL = os.getenv("BYTEPLUS_MODEL", _byteplus_default_model()).strip()
+# Endpoint ID từ Console (ep-xxx) — ưu tiên hơn BYTEPLUS_MODEL khi gọi API
+BYTEPLUS_ENDPOINT_ID = os.getenv("BYTEPLUS_ENDPOINT_ID", "").strip()
+BYTEPLUS_BASE_URL = os.getenv(
+    "BYTEPLUS_BASE_URL",
+    _byteplus_default_base_url(),
 ).strip()

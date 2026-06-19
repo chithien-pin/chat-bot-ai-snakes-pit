@@ -9,6 +9,17 @@ import re
 from typing import Any
 
 from config import GEMINI_API_KEY, GEMINI_MODEL, LLM_PROVIDER
+from budget_browse import (
+    is_budget_browse_query,
+    strip_budget_phrases_for_keywords,
+    _extract_category as _budget_category_from_text,
+)
+from cps_api import (
+    is_stock_status_browse_query,
+    needs_shop_stock_keyword_strip,
+    strip_shop_stock_phrases_for_keywords,
+    strip_stock_browse_phrases_for_keywords,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +34,13 @@ SYSTEM_PROMPT = (
 )
 
 SHOP_STOCK_PROMPT_ADDON = (
-    "Tồn kho: online_stock.stock_status / stock_quantity = tồn online; "
+    "Tồn kho: online_stock.stock_availability / stock_available_id = trạng thái chính thức; "
+    "stock_status = nhãn hiển thị; stock_quantity = số lượng online. "
     "shop_stock = cửa hàng theo tỉnh (total_shops_in_province, shops[].address/phone). "
-    "Nếu online_stock báo 'Còn hàng' hoặc stock_quantity > 0 → SP còn tồn online. "
+    "Chỉ nói 'còn hàng' khi is_buyable_online=true hoặc is_in_stock=true. "
+    "stock_available_id=43 → hết hàng; 56 → đăng ký nhận tin (chưa bán). "
     "Nếu shop_stock.total_shops_in_province > 0 → nêu số cửa hàng và 2–3 địa chỉ mẫu. "
-    "KHÔNG nói 'không có tồn' khi dữ liệu đã báo còn hàng. "
+    "KHÔNG nói 'không có tồn' khi dữ liệu báo còn hàng / đặt trước. "
     "Nếu khách hỏi khu vực cụ thể mà matched_shops_count = 0, nói rõ không khớp địa chỉ. "
     "Không bịa số lượng tồn từng shop."
 )
@@ -43,7 +56,8 @@ MEMBER_PRICE_PROMPT_ADDON = (
 
 PRODUCT_DATA_PROMPT_ADDON = (
     "Luôn dùng đủ các trường trong primary_product và shop_stock (nếu có). "
-    "Không bỏ qua member_prices, promotions, stock_status dù khách chỉ hỏi giá."
+    "Không bỏ qua member_prices, promotions, stock_status dù khách chỉ hỏi giá. "
+    "Mỗi sản phẩm trong search_results có trường url — khi liệt kê SP phải kèm link url đó."
 )
 
 TRADE_IN_PROMPT_ADDON = (
@@ -86,8 +100,69 @@ ADVICE_PROMPT_ADDON = (
 )
 
 INCOMING_STOCK_PROMPT_ADDON = (
-    "Hàng về/đặt trước: stock_available_id=152 hoặc product_state có 'đặt'/'pre' → "
-    "nói đây là đặt trước, không có ngày về cụ thể trong API. Không bịa ETA."
+    "Hàng về/đặt trước: stock_available_id=152 (is_pre_order=true) → đặt trước; "
+    "không bịa ngày về cụ thể. stock_available_id=56 → đăng ký nhận tin, chưa có hàng."
+)
+
+STOCK_STATUS_PROMPT_ADDON = (
+    "Trạng thái sản phẩm — dùng stock_availability (ưu tiên hơn đoán từ stock_quantity):\n"
+    "43 = Hết hàng (out_of_stock) — không mua ngay.\n"
+    "46 = Còn hàng (in_stock) — mua ngay, nêu stock_quantity nếu có.\n"
+    "56 = Đăng ký nhận tin (subscription) — chưa có hàng, chỉ đăng ký nhận thông báo.\n"
+    "152 = Đặt trước (pre_order) — đặt cọc/đặt trước, không bịa ETA.\n"
+    "4164 = Drop shipping — còn bán, giao drop ship.\n"
+    "4920 = Tồn ảo (virtual_stock) — còn hàng online.\n"
+    "Luôn trả lời đúng status_label / display_status. "
+    "KHÔNG nói 'còn hàng' khi is_out_of_stock hoặc is_subscription."
+)
+
+STOCK_BROWSE_PROMPT_ADDON = (
+    "Khách đang tìm SP theo trạng thái tồn (stock_browse). "
+    "search_results đã lọc theo company_stock_id / stock_filter_ids. "
+    "Nếu primary_product.stock_browse_list_mode=true: đây là DANH SÁCH, không deep-dive 1 SP. "
+    "Liệt kê tối thiểu 5–8 SP từ search_results: tên + giá + link url (bắt buộc). "
+    "Mở đầu bằng tổng số SP và trạng thái tồn đang lọc. "
+    "Nếu stock_browse_list_mode=false: primary_product là SP khớp từ khóa; vẫn nêu thêm SP liên quan. "
+    "Không gợi ý SP ngoài danh sách đã lọc trạng thái."
+)
+
+BUDGET_BROWSE_PROMPT_ADDON = (
+    "Khách đang tìm SP theo ngân sách (budget_browse). "
+    "search_results đã lọc theo mức giá trong câu hỏi. "
+    "Nếu primary_product.budget_browse_list_mode=true: đây là DANH SÁCH gợi ý, không deep-dive 1 SP. "
+    "Liệt kê 5–10 SP từ search_results: tên + giá + link url (bắt buộc). "
+    "Mở đầu nêu ngân sách khách hỏi và số SP tìm được. "
+    "Không gợi ý SP ngoài danh sách hoặc vượt ngân sách."
+)
+
+REVIEWS_PROMPT_ADDON = (
+    "product_reviews: average_rating, total_reviews, sample_reviews. "
+    "Nêu điểm trung bình và 1–2 nhận xét tiêu biểu; không bịa review ngoài dữ liệu."
+)
+
+FAQ_PROMPT_ADDON = (
+    "product_faqs: Q&A chính sách từ CellphoneS. "
+    "Ưu tiên trích từ product_faqs khi khách hỏi đổi trả/bảo hành/chính sách."
+)
+
+FLASH_SALE_PROMPT_ADDON = (
+    "flash_sale: chương trình flash sale (slots, giá flash_sale, thời gian). "
+    "Nêu giá flash và slot còn nếu có; không bịa giá ngoài dữ liệu."
+)
+
+TRADE_DEVICE_PROMPT_ADDON = (
+    "trade_exchange_products: giá thu máy cũ theo tình trạng (thu_loai_1–4, tro_gia). "
+    "Giải thích các mức thu; nhắc giá thực tế phụ thuộc tình trạng tại shop."
+)
+
+STORE_LOCATOR_PROMPT_ADDON = (
+    "store_locator: danh sách cửa hàng theo quận (districts, shops). "
+    "Nêu tổng số CH và 3–5 địa chỉ mẫu kèm phone/google_link nếu có."
+)
+
+COMBO_PROMPT_ADDON = (
+    "product_combos: gói mua kèm/combo (discount_percent, max_value). "
+    "Nêu combo tiết kiệm nhất; khuyên xem chi tiết trên web."
 )
 
 MEMBER_TIER_HINTS = (
@@ -120,9 +195,14 @@ MODEL_FALLBACKS = (
 _PRODUCT_HINTS = (
     "iphone", "ipad", "macbook", "imac", "airpods", "apple watch",
     "samsung", "galaxy", "xiaomi", "redmi", "oppo", "vivo", "realme",
-    "laptop", "tablet", "màn hình", "man hinh", "tai nghe",
+    "điện thoại", "dien thoai", "smartphone",
+    "laptop", "tablet", "máy tính", "may tinh", "máy tính bảng", "may tinh bang",
+    "màn hình", "man hinh", "tai nghe",
     "loa ", "chuột", "chuot", "bàn phím", "ban phim", "router", "modem",
     "nồi cơm", "noi com", "máy lạnh", "may lanh", "tủ lạnh", "tu lanh",
+    "nồi chiên", "noi chien", "máy xay", "may xay", "máy sấy", "may say",
+    "bình đun", "binh dun", "ấm siêu tốc", "am sieu toc",
+    "smartwatch", "đồng hồ", "dong ho", "tivi", "camera", "máy ảnh", "may anh",
 )
 
 _VIET_TONE_RE = re.compile(
@@ -156,11 +236,22 @@ _SHOP_INQUIRY_SUFFIX_RE = re.compile(
     r").*$",
     re.IGNORECASE,
 )
+_SHOP_STOCK_PRODUCT_PREFIX_RE = re.compile(
+    r"^(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\s+"
+    r"(?:(?:gần|gan)\s+)?(?:"
+    r"(?:quận|quan|huyện|huyen|phường|phuong)\s+\d+|[qQ]\.?\s*\d+|"
+    r"(?:tôi|toi|mình|minh|đây|day)"
+    r")\s+"
+    r"(?:còn|co(?:\s+hàng|\s+hang)?)\s+",
+    re.IGNORECASE,
+)
 _SEARCH_NOISE_HINTS = (
     "giá ", "gia ", "báo giá", "bao gia",
     "cửa hàng", "cua hang", "chi nhánh", "chi nhanh",
-    "shop nào", "shop nao", "có hàng", "co hang", "còn hàng", "con hang",
-    "ở đâu", "o dau", "gần ", "gan ", "bao nhiêu", "bao nhieu",
+    "shop nào", "shop nao", "shop gần", "shop gan", "shop quận", "shop quan",
+    "có hàng", "co hang", "còn hàng", "con hang",
+    "ở đâu", "o dau", "gần ", "gan ", "quận ", "quan ",
+    "bao nhiêu", "bao nhieu",
     "lên đời", "len doi", "máy cũ", "may cu", "thu cũ", "thu cu",
     "trợ giá", "tro gia", "trade-in", "trade in",
     "gói bảo hành", "goi bao hanh", "bảo hành", "bao hanh",
@@ -214,6 +305,22 @@ _LOCAL_ABBREV: dict[str, str] = {
     "s26u": "samsung galaxy s26 ultra",
 }
 
+# Câu hỏi thuộc tính SP (màu, giá, RAM…) — không nhắc tên SP mới
+_ATTRIBUTE_FOLLOW_UP_RE = re.compile(
+    r"\b("
+    r"màu sắc|mau sac|màu gì|mau gi|có màu|co mau|"
+    r"giá bán|gia ban|giá sao|gia sao|"
+    r"dung lượng|dung luong|bộ nhớ|bo nho|"
+    r"thông số|thong so|cấu hình|cau hinh|"
+    r"pin|sạc|sac|camera|màn hình|man hinh|"
+    r"quà tặng|qua tang|khuyến mãi|khuyen mai|ưu đãi|uu dai|"
+    r"còn hàng|con hang|có hàng|co hang|tồn kho|ton kho|"
+    r"trả góp|tra gop|bảo hành|bao hanh|"
+    r"so sánh|so sanh"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _COMPARE_LEADING_RE = re.compile(
     r"^(?:so sánh|so sanh|tư vấn|tu van|nên mua|nen mua)\s+",
     re.IGNORECASE,
@@ -233,6 +340,8 @@ Quy tắc:
 - Viết tắt: ip=iPhone, prm/pm=Pro Max, ss=Samsung, mb=Macbook, hssv=học sinh sinh viên
 - Giữ dung lượng (128gb, 256gb), màu (titan, hồng) nếu khách nêu
 - Giữ tên hãng Latin (Bear, Sony, Apple, Oppo, Xiaomi...)
+- "đăng ký nhận tin" (chờ mở bán) và "đặt trước" (pre-order) là HAI trạng thái KHÁC — KHÔNG đổi sang nhau
+- Nếu câu chỉ hỏi danh sách theo trạng thái (đăng ký nhận tin, đặt trước, drop ship…) mà không có tên SP → trả về chuỗi rỗng
 
 Ví dụ:
 - "Giá ip 16 pro max 256gb titan tự nhiên" → iPhone 16 Pro Max 256GB Titan Tự Nhiên
@@ -242,7 +351,9 @@ Ví dụ:
 - "Gần 288 3 tháng 3 còn iPhone 16 Pro 128 Titan sa mạc" → iPhone 16 Pro 128GB Titan Sa Mạc
 - "Trả góp Home Credit iPhone 16 128gb" → iPhone 16 128GB
 - "Gói BH VIP rơi vỡ iPhone 16 Pro Max" → iPhone 16 Pro Max
-- Nếu câu mới là hỏi tiếp → dùng ngữ cảnh giữ đúng sản phẩm"""
+- "Mua nồi chiên tầm 8 lít, giá 600k" → nồi chiên 8 lít
+- QUAN TRỌNG: câu mới nhắc danh mục/SP khác ngữ cảnh cũ → CHỈ trích từ câu mới, BỎ QUA ngữ cảnh
+- Chỉ dùng ngữ cảnh khi câu mới là hỏi tiếp thuần (vd: "còn hàng không", "giá sao") về ĐÚNG SP đang thảo luận"""
 
 
 def _serialize_product_data(product_data: dict[str, Any]) -> str:
@@ -263,6 +374,18 @@ def _build_analysis_prompt(
     system = SYSTEM_PROMPT
     if shop_stock or online_stock or primary.get("stock_status"):
         system = f"{system}\n{SHOP_STOCK_PROMPT_ADDON}"
+    if (
+        scenarios.get("stock_status")
+        or scenarios.get("incoming_stock")
+        or scenarios.get("shop_stock")
+        or primary.get("stock_availability")
+        or (online_stock or {}).get("stock_availability")
+    ):
+        system = f"{system}\n{STOCK_STATUS_PROMPT_ADDON}"
+    if scenarios.get("stock_browse") or primary.get("stock_filter_ids"):
+        system = f"{system}\n{STOCK_BROWSE_PROMPT_ADDON}"
+    if primary.get("budget_browse_list_mode") or scenarios.get("budget_browse"):
+        system = f"{system}\n{BUDGET_BROWSE_PROMPT_ADDON}"
     if (
         primary.get("member_prices")
         or primary.get("promotions")
@@ -289,6 +412,18 @@ def _build_analysis_prompt(
         system = f"{system}\n{ADVICE_PROMPT_ADDON}"
     if scenarios.get("incoming_stock"):
         system = f"{system}\n{INCOMING_STOCK_PROMPT_ADDON}"
+    if product_data.get("product_reviews") or scenarios.get("reviews"):
+        system = f"{system}\n{REVIEWS_PROMPT_ADDON}"
+    if product_data.get("product_faqs") or scenarios.get("faq_policy"):
+        system = f"{system}\n{FAQ_PROMPT_ADDON}"
+    if product_data.get("flash_sale") or scenarios.get("flash_sale"):
+        system = f"{system}\n{FLASH_SALE_PROMPT_ADDON}"
+    if product_data.get("trade_exchange_products") or scenarios.get("trade_in_device"):
+        system = f"{system}\n{TRADE_DEVICE_PROMPT_ADDON}"
+    if product_data.get("store_locator") or scenarios.get("store_locator"):
+        system = f"{system}\n{STORE_LOCATOR_PROMPT_ADDON}"
+    if product_data.get("product_combos") or scenarios.get("combo"):
+        system = f"{system}\n{COMBO_PROMPT_ADDON}"
     system = f"{system}\n{PRODUCT_DATA_PROMPT_ADDON}"
     return (
         f"{system}\n\n"
@@ -350,7 +485,19 @@ def _extract_usage(response: Any) -> dict[str, int]:
 
 
 def _llm_provider_label() -> str:
-    return "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini"
+    return {
+        "deepseek": "DeepSeek",
+        "byteplus": "BytePlus",
+    }.get(LLM_PROVIDER, "Gemini")
+
+
+def llm_provider_display_name() -> str:
+    """Tên hiển thị khi bot đang phân tích (vd: Gemini AI, BytePlus)."""
+    labels = {
+        "deepseek": "DeepSeek",
+        "byteplus": "BytePlus",
+    }
+    return labels.get(LLM_PROVIDER, "Gemini AI")
 
 
 def _generate_deepseek_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
@@ -359,10 +506,18 @@ def _generate_deepseek_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
     return generate_chat(prompt)
 
 
+def _generate_byteplus_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
+    from byteplus_client import generate_chat
+
+    return generate_chat(prompt)
+
+
 def _generate_with_fallback_meta(prompt: str) -> tuple[str | None, dict[str, Any]]:
-    """Gọi LLM (Gemini hoặc DeepSeek); trả text + metadata usage."""
+    """Gọi LLM (Gemini, DeepSeek hoặc BytePlus); trả text + metadata usage."""
     if LLM_PROVIDER == "deepseek":
         return _generate_deepseek_meta(prompt)
+    if LLM_PROVIDER == "byteplus":
+        return _generate_byteplus_meta(prompt)
 
     tried: list[str] = []
     client = _ensure_genai_client()
@@ -435,6 +590,7 @@ def _has_search_noise(text: str) -> bool:
 def _strip_search_noise(text: str) -> str:
     """Bóc prefix giá / suffix hỏi tồn cửa hàng — chỉ giữ tên sản phẩm."""
     cleaned = (text or "").strip().rstrip("?").strip()
+    cleaned = _SHOP_STOCK_PRODUCT_PREFIX_RE.sub("", cleaned)
     cleaned = _SEARCH_PREFIX_RE.sub("", cleaned)
     cleaned = _SHOP_INQUIRY_SUFFIX_RE.sub("", cleaned)
     cleaned = _TRADE_CONTEXT_RE.sub(" ", cleaned)
@@ -478,11 +634,81 @@ def needs_query_expansion(text: str) -> bool:
     return False
 
 
+def _keyword_tokens(text: str) -> set[str]:
+    normalized = re.sub(
+        r"[^\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ\s]",
+        " ",
+        (text or "").lower(),
+    )
+    stop = {
+        "mua", "tim", "tìm", "cho", "có", "co", "không", "khong", "và", "va",
+        "the", "là", "la", "của", "cua", "một", "mot", "cái", "cai",
+    }
+    return {
+        t
+        for t in normalized.split()
+        if len(t) >= 2 and t not in stop
+    }
+
+
+def _keywords_match_query(keywords: str, original: str) -> bool:
+    """LLM keyword phải liên quan câu mới — tránh hallucinate từ ngữ cảnh cũ."""
+    kw = (keywords or "").strip().lower()
+    if not kw:
+        return False
+    orig_lower = (original or "").lower()
+    if _budget_category_from_text(original):
+        cat = _budget_category_from_text(original)
+        if cat and cat in kw:
+            return True
+    for hint in _PRODUCT_HINTS:
+        if hint in orig_lower and hint in kw:
+            return True
+    overlap = _keyword_tokens(kw) & _keyword_tokens(original)
+    if overlap:
+        return True
+    if _has_abbrev_tokens(original):
+        for word in _tokenize_words(original):
+            expanded = _LOCAL_ABBREV.get(word.lower(), "")
+            if expanded and any(t in kw for t in expanded.split() if len(t) >= 3):
+                return True
+    return False
+
+
+def _local_keywords_usable(original: str, keywords: str) -> bool:
+    if not keywords or len(keywords.strip()) < 2:
+        return False
+    if _has_search_noise(keywords):
+        return False
+    lower = keywords.lower()
+    if any(h in lower for h in _PRODUCT_HINTS):
+        return True
+    if _budget_category_from_text(original):
+        return True
+    return bool(_keyword_tokens(keywords) & _keyword_tokens(original))
+
+
 def _normalize_keyword_line(text: str) -> str:
     """Một dòng từ khóa sạch cho API search."""
     line = text.strip().strip("\"'`").split("\n")[0].strip()
     line = _strip_search_noise(line)
     return line
+
+
+def _mentions_new_product(text: str) -> bool:
+    """Câu có nhắc sản phẩm / model mới (khác ngữ cảnh đang thảo luận)."""
+    if is_budget_browse_query(text):
+        return True
+    if _has_abbrev_tokens(text):
+        return True
+    lower = text.lower()
+    if any(h in lower for h in _PRODUCT_HINTS):
+        return True
+    if re.search(r"\b(?:iphone|ipad|galaxy|macbook|redmi|oppo|vivo)\s*\d", lower):
+        return True
+    if re.search(r"\b\d{1,2}\s*(?:pro|plus|ultra|max|prm|pm)\b", lower):
+        return True
+    return False
 
 
 def _is_follow_up_question(text: str) -> bool:
@@ -500,6 +726,7 @@ def _is_follow_up_question(text: str) -> bool:
 
     follow_patterns = (
         "còn hàng", "con hang", "có không", "co khong", "giá sao", "gia sao",
+        "giá bán", "gia ban", "màu sắc", "mau sac", "màu gì", "mau gi",
         "bao nhiêu", "bn tiền", "cái đó", "cai do", "thế nào", "the nao",
         "so với", "rẻ hơn", "đắt hơn",
         "quà tặng", "qua tang", "khuyến mãi", "khuyen mai", "ưu đãi", "uu dai",
@@ -507,7 +734,9 @@ def _is_follow_up_question(text: str) -> bool:
         "bảo hành", "bao hanh", "đủ không", "du khong", "phù hợp", "phu hop",
         "nên mua", "nen mua", "giảm giá", "giam gia", "pmh", "voucher",
     )
-    return any(p in t for p in follow_patterns)
+    if any(p in t for p in follow_patterns):
+        return True
+    return bool(_ATTRIBUTE_FOLLOW_UP_RE.search(text))
 
 
 def _context_has_product(conversation_context: str) -> bool:
@@ -525,6 +754,8 @@ def is_contextual_follow_up(
     """
     Câu hỏi tiếp trong cùng chủ đề SP (kể cả hỏi quà tặng/KM mà không nhắc tên SP).
     """
+    if is_budget_browse_query(text):
+        return False
     if not _context_has_product(conversation_context):
         return False
     if _is_follow_up_question(text):
@@ -533,12 +764,11 @@ def is_contextual_follow_up(
     t = text.strip().lower()
     if _has_abbrev_tokens(text):
         return False
-    if any(h in t for h in _PRODUCT_HINTS):
+    if _mentions_new_product(text):
         return False
-    if len(t) > 60:
+    if len(t) > 80:
         return False
 
-    # Câu ngắn hỏi thêm về SP đang thảo luận (không chứa tên SP mới)
     question_markers = ("không", "khong", "gì", "gi", "sao", "nào", "nao", "?")
     if len(t.split()) <= 10 and any(m in t for m in question_markers):
         return True
@@ -572,61 +802,95 @@ def extract_search_keywords(
 ) -> str:
     """
     Bóc tách từ khóa sản phẩm từ câu khách — chỉ chuỗi này được gửi API CellphoneS.
+    Luôn ưu tiên câu mới; chỉ reuse ngữ cảnh khi hỏi tiếp thuần.
     """
     original = user_text.strip()
     if not original:
         return ""
 
-    # Bước 1: luôn bóc từ khóa từ CÂU MỚI trước (không ưu tiên context)
+    if is_stock_status_browse_query(original):
+        keywords = strip_stock_browse_phrases_for_keywords(original)
+        logger.info("Từ khóa (stock browse): %r → %r", original, keywords)
+        return keywords
+
+    if is_budget_browse_query(original):
+        keywords = strip_budget_phrases_for_keywords(original)
+        logger.info("Từ khóa (budget browse): %r → %r", original, keywords)
+        return keywords
+
+    if needs_shop_stock_keyword_strip(original):
+        keywords = strip_shop_stock_phrases_for_keywords(original)
+        keywords = _normalize_keyword_line(keywords) if keywords else keywords
+        logger.info("Từ khóa (shop stock): %r → %r", original, keywords)
+        return keywords
+
+    new_topic = _mentions_new_product(original)
+
     local_keywords = _normalize_keyword_line(
         _strip_usage_context(_replace_abbrev_tokens(original))
     )
 
-    # Hỏi tiếp trong cùng chủ đề → giữ từ khóa / SP cũ, không search lại bừa
-    if conversation_context and is_contextual_follow_up(original, conversation_context):
-        reused = _reuse_keywords_from_context(original, conversation_context)
-        if reused:
-            return reused
+    local_full = _LOCAL_ABBREV.get(original.lower())
+    if local_full:
+        local_keywords = _normalize_keyword_line(local_full)
 
     if _has_abbrev_tokens(original) and local_keywords:
         logger.info("Từ khóa (từ điển): %r → %r", original, local_keywords)
         return local_keywords
 
-    local_full = _LOCAL_ABBREV.get(original.lower())
-    if local_full:
-        keywords = _normalize_keyword_line(local_full)
-        logger.info("Từ khóa (map cả câu): %r → %r", original, keywords)
-        return keywords
-
-    if local_keywords and not _has_search_noise(local_keywords):
+    if _local_keywords_usable(original, local_keywords):
         logger.info("Từ khóa (bóc cục bộ): %r → %r", original, local_keywords)
         return local_keywords
 
-    if not needs_query_expansion(original):
-        keywords = local_keywords or _normalize_keyword_line(original)
-        logger.info("Từ khóa (câu rõ): %r → %r", original, keywords)
-        return keywords
+    if not needs_query_expansion(original) and local_keywords and not _has_search_noise(local_keywords):
+        logger.info("Từ khóa (câu rõ): %r → %r", original, local_keywords)
+        return local_keywords
 
-    # Bước 2: Gemini trích từ khóa khi bóc cục bộ chưa đủ
-    ctx = f"{conversation_context}\n\n" if conversation_context else ""
-    prompt = EXTRACT_KEYWORDS_PROMPT.format(
-        context_block=ctx,
-        query=original,
+    # Chỉ reuse session khi hỏi tiếp thuần — không đổi chủ đề SP
+    if (
+        conversation_context
+        and _context_has_product(conversation_context)
+        and not new_topic
+        and is_contextual_follow_up(original, conversation_context)
+    ):
+        reused = _reuse_keywords_from_context(original, conversation_context)
+        if reused:
+            return reused
+
+    # LLM chỉ nhận ngữ cảnh khi thật sự là hỏi tiếp
+    use_ctx = (
+        conversation_context
+        and not new_topic
+        and is_contextual_follow_up(original, conversation_context)
     )
+    ctx = f"{conversation_context}\n\n" if use_ctx else ""
+    prompt = EXTRACT_KEYWORDS_PROMPT.format(context_block=ctx, query=original)
     extracted = _generate_with_fallback(prompt)
     if extracted:
         keywords = _normalize_keyword_line(extracted)
-        if keywords:
-            logger.info("Từ khóa (%s): %r → %r", _llm_provider_label(), original, keywords)
+        if keywords and _keywords_match_query(keywords, original):
+            logger.info(
+                "Từ khóa (%s): %r → %r",
+                _llm_provider_label(),
+                original,
+                keywords,
+            )
             return keywords
+        if keywords:
+            logger.warning(
+                "%s keyword không khớp câu mới, bỏ qua: %r → %r",
+                _llm_provider_label(),
+                original,
+                keywords,
+            )
 
-    logger.warning(
-        "%s không trích được từ khóa, dùng bản cục bộ: %r → %r",
-        _llm_provider_label(),
-        original,
-        local_keywords,
-    )
-    return local_keywords or original
+    if local_keywords:
+        logger.info("Từ khóa (fallback cục bộ): %r → %r", original, local_keywords)
+        return local_keywords
+
+    fallback = _normalize_keyword_line(original) or original
+    logger.info("Từ khóa (fallback câu gốc): %r → %r", original, fallback)
+    return fallback
 
 
 def prepare_search_query(user_text: str) -> tuple[str, bool]:

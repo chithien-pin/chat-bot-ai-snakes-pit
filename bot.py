@@ -21,18 +21,39 @@ from telegram.ext import (
     filters,
 )
 
-from config import GEMINI_API_KEY, GROUP_CHAT_ID, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
+from config import (
+    BYTEPLUS_API_KEY,
+    DEEPSEEK_API_KEY,
+    GEMINI_API_KEY,
+    GROUP_CHAT_ID,
+    LLM_PROVIDER,
+    TELEGRAM_BOT_TOKEN,
+)
 from cps_api import (
     attach_shop_stock_to_payload,
+    classify_question_scenarios,
     enrich_payload_for_scenarios,
     fetch_product_for_query,
+    is_shop_stock_question,
+    is_stock_status_browse_query,
 )
 from conversation import (
     append_turn,
     clear_session,
     format_context_block,
     get_session,
+    has_product_context,
+    mirror_session_to_chat_level,
+    resolve_session,
+    session_scope_key,
 )
+from disambiguation import (
+    build_disambiguation_message,
+    build_telegram_disambiguation_keyboard,
+    resolve_disambiguation_choice,
+)
+from budget_browse import is_budget_browse_query
+from location_flow import handle_province_gate, shop_question_for_session
 from feedback import (
     FEEDBACK_HELPFUL,
     FEEDBACK_NOT_HELPFUL,
@@ -48,10 +69,14 @@ from gemini_client import (
     extract_compare_product_queries,
     extract_search_keywords,
     is_contextual_follow_up,
+    llm_provider_display_name,
     needs_query_expansion,
+    _mentions_new_product,
 )
 from metrics import emit_metric
-from scraper import build_product_payload, build_response_link_url, product_url_from_record
+from message_intent import is_social_message, resolve_message_intent
+from scraper import build_product_payload, build_response_link_url, format_product_links_appendix, product_url_from_record
+from session_store import load_session_store
 
 # Cấu hình logging ra console
 logging.basicConfig(
@@ -239,8 +264,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     thread_id = getattr(update.message, "message_thread_id", None)
     thread_key = f"thread:{thread_id}" if thread_id else None
     session = get_session(store, chat_id, user_id, thread_key=thread_key)
-    conversation_context = format_context_block(session)
-    is_follow_up = is_contextual_follow_up(user_question, conversation_context)
+    session_key = session_scope_key(chat_id, user_id, thread_key=thread_key)
+
+    pending = session.get("pending_disambiguation") or []
+    disambig_pick = resolve_disambiguation_choice(user_question, pending) if pending else None
+    forced_product_url = ""
+    if disambig_pick:
+        session.pop("pending_disambiguation", None)
+        forced_product_url = product_url_from_record(disambig_pick)
+
+    context_session = resolve_session(
+        store, chat_id, user_id, thread_key=thread_key
+    )
+    conversation_context = format_context_block(context_session)
+    social = is_social_message(user_question)
+    is_follow_up = (
+        not social
+        and is_contextual_follow_up(user_question, conversation_context)
+    )
+    reuse_product_context = not social and (
+        is_follow_up
+        or (
+            has_product_context(context_session)
+            and not _mentions_new_product(user_question)
+        )
+    )
     started = time.perf_counter()
     metric_data: dict[str, object] = {
         "platform": "telegram",
@@ -249,6 +297,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "is_follow_up": is_follow_up,
         "question_len": len(user_question),
     }
+
+    intent = resolve_message_intent(
+        user_question,
+        conversation_context=conversation_context,
+        has_product_context=has_product_context(context_session),
+        is_follow_up=is_follow_up,
+        has_pending_disambiguation=bool(pending),
+        has_pending_province=bool(session.get("pending_province_for")),
+    )
+    if intent.kind != "product" and intent.reply:
+        metric_data["intent"] = intent.kind
+        metric_data["status"] = f"intent_{intent.kind}"
+        await update.message.reply_text(intent.reply)
+        append_turn(
+            session,
+            user=user_question,
+            assistant=intent.reply,
+            keywords="",
+            product_name="",
+            product_url="",
+            session_key=session_key,
+        )
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return
+
+    province_gate = handle_province_gate(
+        user_question,
+        session,
+        has_product_context=has_product_context(context_session),
+    )
+    if province_gate.should_ask:
+        session["pending_province_for"] = province_gate.pending_kind
+        metric_data["status"] = "ask_province"
+        metric_data["pending_province_for"] = province_gate.pending_kind
+        await update.message.reply_text(province_gate.reply, parse_mode=ParseMode.MARKDOWN)
+        append_turn(
+            session,
+            user=user_question,
+            assistant=province_gate.reply,
+            keywords="",
+            product_name="",
+            product_url="",
+            session_key=session_key,
+        )
+        emit_metric(
+            "chat_message",
+            **metric_data,
+            total_latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return
+
+    query_province_id = province_gate.province_id
+    resume_shop_stock = session.pop("resume_shop_stock", False)
+    resume_store_locator = session.pop("resume_store_locator", False)
+    shop_question = (
+        shop_question_for_session(session, user_question)
+        if resume_shop_stock or resume_store_locator
+        else user_question
+    )
 
     status_msg = await update.message.reply_text("🔍 Đang tìm kiếm thông tin...")
 
@@ -259,18 +370,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Bước 0: bóc tách từ khóa từ CÂU MỚI (context chỉ hỗ trợ hỏi tiếp ngắn)
         t0 = time.perf_counter()
-        kw_context = conversation_context if is_follow_up else ""
+        kw_context = conversation_context if reuse_product_context else ""
         if compare_queries:
             search_keywords = compare_queries[0]
         else:
-            if needs_query_expansion(user_question):
+            stock_browse = is_stock_status_browse_query(user_question)
+            budget_browse = is_budget_browse_query(user_question)
+            if needs_query_expansion(user_question) and not stock_browse and not budget_browse:
                 await status_msg.edit_text("✍️ Đang hiểu câu hỏi của bạn...")
             search_keywords = await asyncio.to_thread(
                 extract_search_keywords, user_question, kw_context
             )
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
-        if not search_keywords:
-            await status_msg.edit_text("😔 Không hiểu được sản phẩm bạn cần tìm.")
+        stock_browse = is_stock_status_browse_query(user_question)
+        budget_browse = is_budget_browse_query(user_question)
+        if not search_keywords and not stock_browse and not budget_browse:
+            clarify = resolve_message_intent(
+                user_question,
+                conversation_context=conversation_context,
+                has_product_context=has_product_context(context_session),
+                is_follow_up=is_follow_up,
+            ).reply
+            await status_msg.edit_text(
+                clarify or "😔 Không hiểu được sản phẩm bạn cần tìm."
+            )
             metric_data["status"] = "keyword_empty"
             emit_metric(
                 "chat_message",
@@ -286,12 +409,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
         fallback_url = ""
-        if is_follow_up:
-            last_product = session.get("last_product") or {}
+        if forced_product_url:
+            fallback_url = forced_product_url
+        elif reuse_product_context:
+            last_product = context_session.get("last_product") or {}
             fallback_url = last_product.get("url") or ""
 
         # Bước 1: search / link / CPS GraphQL detail (hoặc so sánh 2 SP)
-        await status_msg.edit_text(f"🔍 Đang tìm: _{search_keywords}_...")
+        if (stock_browse or budget_browse) and not search_keywords:
+            await status_msg.edit_text("🔍 Đang tìm sản phẩm phù hợp...")
+        else:
+            await status_msg.edit_text(f"🔍 Đang tìm: _{search_keywords}_...")
         t1 = time.perf_counter()
         compare_products: list[dict[str, Any]] = []
         if compare_queries:
@@ -332,24 +460,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
         if not results and not detail:
-            hint = (
-                f"\n\n_Từ khóa đã tìm: {search_keywords}_"
-                if search_keywords != user_question
-                else ""
-            )
-            await status_msg.edit_text(
-                "😔 Không tìm thấy sản phẩm phù hợp trên CellphoneS.\n"
-                "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
-                f"{hint}"
-            )
-            metric_data["status"] = "not_found"
-            metric_data["search_keywords"] = search_keywords
-            emit_metric(
-                "chat_message",
-                **metric_data,
-                total_latency_ms=int((time.perf_counter() - started) * 1000),
-            )
-            return
+            scenarios = classify_question_scenarios(shop_question)
+            if scenarios.get("store_locator") or resume_store_locator:
+                detail = {
+                    "name": "Cửa hàng CellphoneS",
+                    "product_id": "",
+                    "url": "",
+                    "price": "",
+                }
+            else:
+                hint = (
+                    f"\n\n_Từ khóa đã tìm: {search_keywords}_"
+                    if search_keywords != user_question
+                    else ""
+                )
+                await status_msg.edit_text(
+                    "😔 Không tìm thấy sản phẩm phù hợp trên CellphoneS.\n"
+                    "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
+                    f"{hint}"
+                )
+                metric_data["status"] = "not_found"
+                metric_data["search_keywords"] = search_keywords
+                emit_metric(
+                    "chat_message",
+                    **metric_data,
+                    total_latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+                return
+
+        if fetch_stats.get("ambiguous_search") and len(results) >= 2:
+            session["pending_disambiguation"] = results[:3]
+            metric_data["ambiguous_search"] = True
+
+        metric_data["resolve_source"] = fetch_stats.get("resolve_source", "")
 
         # Bước 2: đã có chi tiết từ CPS API
         await status_msg.edit_text(
@@ -383,23 +526,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 search_keywords=search_keywords,
             )
 
-        if detail.get("product_id"):
+        shop_ctx = None
+        if (
+            detail.get("product_id")
+            and not detail.get("stock_browse_list_mode")
+            and not detail.get("budget_browse_list_mode")
+            and (is_shop_stock_question(shop_question) or resume_shop_stock)
+        ):
             await status_msg.edit_text("🏪 Đang kiểm tra tồn cửa hàng...")
-        shop_ctx = await attach_shop_stock_to_payload(
-            payload, detail, user_question=user_question
-        )
+            shop_ctx = await attach_shop_stock_to_payload(
+                payload,
+                detail,
+                user_question=shop_question,
+                province_id=query_province_id,
+            )
         if shop_ctx:
             metric_data["shop_stock_scenario"] = True
             metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
 
         scenario_flags = await enrich_payload_for_scenarios(
-            payload, detail, user_question=user_question
+            payload,
+            detail,
+            user_question=shop_question,
+            province_id=query_province_id,
         )
         if scenario_flags:
             metric_data["scenario_enrich"] = scenario_flags
 
         # Bước 3: phân tích bằng Gemini (chạy sync trong thread pool)
-        llm_label = "DeepSeek" if LLM_PROVIDER == "deepseek" else "Gemini AI"
+        llm_label = llm_provider_display_name()
         await status_msg.edit_text(f"🤖 Đang phân tích với {llm_label}...")
         t2 = time.perf_counter()
         answer, gemini_meta = await asyncio.to_thread(
@@ -419,8 +574,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 }
             )
         answer = truncate_message(answer)
+        search_list = payload.get("search_results") or []
+        scenarios = payload.get("question_scenarios") or {}
+        if len(search_list) > 1 or scenarios.get("stock_browse") or scenarios.get("budget_browse"):
+            appendix = format_product_links_appendix(search_list)
+            if appendix and appendix not in answer:
+                answer = truncate_message(f"{answer}{appendix}")
 
-        product_name = (detail.get("name") or results[0].get("name") or "").strip()
+        disambig_msg = build_disambiguation_message(results) if fetch_stats.get("ambiguous_search") else ""
+        if disambig_msg and disambig_msg not in answer:
+            answer = truncate_message(f"{answer}\n\n{disambig_msg}")
+
+        product_name = (detail.get("name") or (results[0].get("name") if results else "") or "").strip()
         append_turn(
             session,
             user=user_question,
@@ -428,7 +593,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             keywords=search_keywords,
             product_name=product_name,
             product_url=product_url,
+            session_key=session_key,
         )
+        mirror_session_to_chat_level(store, chat_id, user_id, session)
 
         # Interactive card: đánh giá + link Cellphones
         keyboard = build_telegram_feedback_keyboard(response_link_url)
@@ -533,7 +700,15 @@ def validate_config() -> None:
         raise ValueError(
             "Thiếu TELEGRAM_BOT_TOKEN — hãy điền vào file .env"
         )
-    if not GEMINI_API_KEY or any(p in GEMINI_API_KEY for p in placeholders):
+    provider = LLM_PROVIDER
+    if provider == "deepseek":
+        if not DEEPSEEK_API_KEY or any(p in DEEPSEEK_API_KEY for p in placeholders):
+            raise ValueError("LLM_PROVIDER=deepseek — cần DEEPSEEK_API_KEY trong .env")
+    elif provider == "byteplus":
+        from byteplus_client import validate_byteplus_config
+
+        validate_byteplus_config()
+    elif not GEMINI_API_KEY or any(p in GEMINI_API_KEY for p in placeholders):
         raise ValueError("Thiếu GEMINI_API_KEY — hãy điền vào file .env")
 
 
@@ -557,9 +732,13 @@ def main() -> None:
     else:
         logger.info("Phản hồi mọi chat (GROUP_CHAT_ID trống)")
 
+    async def _post_init(application: Application) -> None:
+        application.bot_data["sessions"] = load_session_store()
+
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
+        .post_init(_post_init)
         .build()
     )
 
