@@ -1,9 +1,9 @@
 {
-  "updated_at": "2026-06-18T11:00:37.788727+00:00",
+  "updated_at": "2026-06-26T00:00:00.387685+00:00",
   "menu_id": 5,
-  "link_count": 554,
+  "link_count": 556,
   "category_count": 365,
-  "progress_index": 554,
+  "progress_index": 556,
   "entries": {
     "Điện thoại": "3",
     "Tablet": "4",
@@ -1333,6 +1333,21 @@
       "name": "Thủ thuật - Hỏi đáp",
       "path": "sforum/thu-thuat",
       "reason": "not_category"
+    },
+    {
+      "name": "S-BuyBack Chương trình cam kết giá thu",
+      "path": "bao-hanh-giu-gia",
+      "reason": "not_category"
+    },
+    {
+      "name": "Soundcore Liberty 5 Pro",
+      "path": "tai-nghe-khong-day-anker-soundcore-liberty-5-pro.html",
+      "reason": "not_category"
+    },
+    {
+      "name": "Soundcore Liberty 5 Pro Max",
+      "path": "tai-nghe-tws-anker-soundcore-liberty-5-pro-max.html",
+      "reason": "not_category"
     }
   ],
   "errors": [],
@@ -1341,6 +1356,7 @@
     "apple-airpods-max-2.html",
     "apple-airpods-pro-3.html",
     "bang-ve-dien-tu.html",
+    "bao-hanh-giu-gia",
     "bo-loc/dien-thoai-gia-re-duoi-2-trieu",
     "bo-loc/dien-thoai-tren-20-trieu",
     "bo-loc/dien-thoai-tu-13-20-trieu",
@@ -1793,10 +1809,12 @@
     "tablet/xiaomi.html",
     "tai-nghe-bluetooth-samsung-galaxy-buds-core.html",
     "tai-nghe-bluetooth-xiaomi-redmi-buds-8-active.html",
+    "tai-nghe-khong-day-anker-soundcore-liberty-5-pro.html",
     "tai-nghe-khong-day-huawei-freebuds-pro-5-anc.html",
     "tai-nghe-khong-day-sony-wf-1000xm6.html",
     "tai-nghe-samsung-galaxy-buds-3-pro.html",
     "tai-nghe-samsung-galaxy-buds-4-pro.html",
+    "tai-nghe-tws-anker-soundcore-liberty-5-pro-max.html",
     "thiet-bi-am-thanh.html",
     "thiet-bi-am-thanh/loa.html",
     "thiet-bi-am-thanh/loa/acnos.html",

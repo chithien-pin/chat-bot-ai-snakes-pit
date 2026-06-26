@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CellphoneS Bot Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>CellphoneS <span>Bot</span> Dashboard</h1>
+      <p class="subtitle">Pipeline: Intent → Keywords → CPS Fetch → Enrich → LLM → Reply</p>
+    </div>
+    <div class="controls">
+      <select id="hours">
+        <option value="24">24 giờ</option>
+        <option value="72">3 ngày</option>
+        <option value="168" selected>7 ngày</option>
+        <option value="720">30 ngày</option>
+      </select>
+      <button class="primary" id="refresh">Làm mới</button>
+      <span id="last-updated"></span>
+    </div>
+  </header>
+
+  <main>
+    <div class="flow-diagram">
+      <span class="flow-step">Telegram / Lark</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">Intent</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">Keywords</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">Fetch (search / filter / url)</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">Scenario enrich</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">LLM</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">Feedback</span>
+    </div>
+
+    <p class="section-title">Tổng quan</p>
+    <div class="kpi-grid" id="kpis"></div>
+
+    <p class="section-title">Biểu đồ</p>
+    <div class="chart-grid">
+      <div class="card col-8">
+        <h3>Tin nhắn theo thời gian</h3>
+        <div class="chart-wrap"><canvas id="chartTimeline"></canvas></div>
+      </div>
+      <div class="card col-4">
+        <h3>Trạng thái xử lý</h3>
+        <div class="chart-wrap sm"><canvas id="chartStatus"></canvas></div>
+      </div>
+      <div class="card col-4">
+        <h3>Nguồn tìm sản phẩm (resolve_source)</h3>
+        <div class="chart-wrap sm"><canvas id="chartResolve"></canvas></div>
+      </div>
+      <div class="card col-4">
+        <h3>Latency breakdown (ms)</h3>
+        <div class="chart-wrap sm"><canvas id="chartLatency"></canvas></div>
+      </div>
+      <div class="card col-4">
+        <h3>LLM tokens (in / out)</h3>
+        <div class="chart-wrap sm"><canvas id="chartTokens"></canvas></div>
+      </div>
+      <div class="card col-4">
+        <h3>CPS API calls</h3>
+        <div class="chart-wrap sm"><canvas id="chartApi"></canvas></div>
+      </div>
+      <div class="card col-6">
+        <h3>Pipeline funnel</h3>
+        <div class="pipeline" id="pipeline"></div>
+      </div>
+      <div class="card col-6">
+        <h3>Scenario enrichment (đã fetch)</h3>
+        <div class="chart-wrap sm"><canvas id="chartScenarios"></canvas></div>
+      </div>
+    </div>
+
+    <p class="section-title">Tin nhắn gần đây</p>
+    <div class="card col-12">
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Thời gian</th>
+              <th>Platform</th>
+              <th>Status</th>
+              <th>Resolve</th>
+              <th>Keywords</th>
+              <th>Latency</th>
+              <th>In</th>
+              <th>Out</th>
+              <th>LLM</th>
+              <th>Product</th>
+            </tr>
+          </thead>
+          <tbody id="messages-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="section-title">Sessions & Feedback</p>
+    <div class="chart-grid">
+      <div class="card col-8">
+        <h3>Phiên hội thoại (sessions.db)</h3>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Cập nhật</th>
+                <th>Turns</th>
+                <th>Keywords</th>
+                <th>Sản phẩm</th>
+                <th>Pending</th>
+              </tr>
+            </thead>
+            <tbody id="sessions-table"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card col-4">
+        <h3>Feedback 👍/👎</h3>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr><th>Thời gian</th><th>Rating</th><th>Platform</th></tr>
+            </thead>
+            <tbody id="feedback-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <p class="section-title">Data sync health</p>
+    <div class="health-grid" id="data-health"></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

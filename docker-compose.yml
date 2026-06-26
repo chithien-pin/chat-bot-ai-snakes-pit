@@ -1,0 +1,112 @@
+# CPS Bot — Docker Compose
+#
+# Chuẩn bị:
+#   cp .env.example .env   # điền token/key
+#
+# Chạy nhanh:
+#   docker compose up -d --build                  # API dashboard (:8080)
+#   docker compose --profile ui up -d --build       # API + Next.js UI (:3000)
+#   docker compose --profile bots up -d --build     # build image (api) + bots
+#   docker compose --profile sync up -d --build       # sync daemons
+#   docker compose --profile all --profile bots up -d --build
+#
+# Lưu ý: chỉ service `api` build image `cps-bot:latest` (tránh lỗi parallel export).
+#
+# Logs:  docker compose logs -f api
+# Stop:  docker compose down
+
+name: cps-bot
+
+x-bot-common: &bot-common
+  image: cps-bot:latest
+  pull_policy: never
+  env_file:
+    - .env
+  environment:
+    DASHBOARD_HOST: 0.0.0.0
+    METRICS_LOG_PATH: /app/metrics.log
+    SESSION_DB_PATH: /app/var/sessions.db
+    USER_NAMES_CACHE_PATH: /app/var/user_names.json
+  volumes:
+    - ./data:/app/data
+    - ./metrics.log:/app/metrics.log
+    - bot-state:/app/var
+  restart: unless-stopped
+  networks:
+    - cps-bot
+
+services:
+  api:
+    <<: *bot-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cps-bot-api
+    command: ["dashboard"]
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+
+  telegram:
+    <<: *bot-common
+    container_name: cps-bot-telegram
+    command: ["telegram"]
+    profiles: ["bots", "telegram"]
+    depends_on:
+      api:
+        condition: service_started
+
+  lark:
+    <<: *bot-common
+    container_name: cps-bot-lark
+    command: ["lark"]
+    profiles: ["bots", "lark"]
+    depends_on:
+      api:
+        condition: service_started
+
+  menu-sync:
+    <<: *bot-common
+    container_name: cps-bot-menu-sync
+    command: ["menu-sync"]
+    profiles: ["sync", "all"]
+    depends_on:
+      api:
+        condition: service_started
+
+  category-sync:
+    <<: *bot-common
+    container_name: cps-bot-category-sync
+    command: ["category-sync"]
+    profiles: ["sync", "all"]
+    depends_on:
+      api:
+        condition: service_started
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+      args:
+        API_BACKEND_URL: http://api:8080
+    image: cps-bot-ui:latest
+    pull_policy: never
+    container_name: cps-bot-ui
+    environment:
+      API_BACKEND_URL: http://api:8080
+      PORT: "3000"
+    ports:
+      - "${DASHBOARD_UI_PORT:-3000}:3000"
+    profiles: ["ui", "all"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - cps-bot
+
+networks:
+  cps-bot:
+    driver: bridge
+
+volumes:
+  bot-state:

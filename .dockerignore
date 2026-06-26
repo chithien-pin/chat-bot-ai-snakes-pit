@@ -1,0 +1,39 @@
+# Git & IDE
+.git
+.gitignore
+.cursor
+.idea
+.vscode
+__MACOSX
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Node
+bot-dashboard/node_modules
+bot-dashboard/.next
+
+# Runtime / secrets (mount at run time)
+.env
+.env.local
+*.log
+metrics.log
+sessions.db
+data/feedback_training.jsonl
+
+# Large / optional — mount ./data instead
+# data/
+
+# Docs & misc
+*.md
+!bot-dashboard/README.md
+cps-nuxt-standard
+scripts/reorganize_project.py

@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sidebar-width: 260px;
+}
+
+body {
+  @apply bg-surface-muted text-text-primary antialiased;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-surface border border-surface-border shadow-card;
+  }
+  .card-hover {
+    @apply transition-shadow hover:shadow-cardHover;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .nav-item {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors;
+  }
+  .nav-item-active {
+    @apply bg-brand-light text-brand-dark;
+  }
+  .nav-item:hover:not(.nav-item-active) {
+    @apply bg-surface-muted text-text-primary;
+  }
+}
+
+.pipeline-line {
+  @apply absolute left-[19px] top-10 bottom-0 w-0.5 bg-surface-border;
+}

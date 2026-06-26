@@ -95,6 +95,79 @@ MENU_CATEGORY_MAP_PATH = os.getenv(
     "MENU_CATEGORY_MAP_PATH",
     str(Path(__file__).resolve().parent / "data" / "menu_category_map.json"),
 ).strip()
+CATEGORY_ATTRIBUTES_MAP_PATH = os.getenv(
+    "CATEGORY_ATTRIBUTES_MAP_PATH",
+    str(Path(__file__).resolve().parent / "data" / "category_attributes_map.json"),
+).strip()
+CATEGORY_ATTRIBUTES_FETCH_DELAY_SEC = float(
+    os.getenv("CATEGORY_ATTRIBUTES_FETCH_DELAY_SEC", "3")
+)
+
+# Metrics + dashboard
+METRICS_LOG_PATH = os.getenv(
+    "METRICS_LOG_PATH",
+    str(Path(__file__).resolve().parent / "metrics.log"),
+).strip()
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0").strip()
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8080"))
+DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin").strip()
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
+DASHBOARD_AUTH_SALT = os.getenv("DASHBOARD_AUTH_SALT", "cps-bot-dashboard").strip()
+
+# Product map — tra product_id trước GraphQL search
+PRODUCT_MAP_PATH = os.getenv(
+    "PRODUCT_MAP_PATH",
+    str(Path(__file__).resolve().parent / "data" / "product_map.txt"),
+).strip()
+PRODUCT_MAP_ENABLED = os.getenv("PRODUCT_MAP_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PRODUCT_MAP_MIN_SCORE = int(os.getenv("PRODUCT_MAP_MIN_SCORE", "25"))
+
+# Latency — browse list trả template (không LLM); payload LLM gọn hơn
+FAST_BROWSE_REPLY = os.getenv("FAST_BROWSE_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+SLIM_LLM_PAYLOAD = os.getenv("SLIM_LLM_PAYLOAD", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LLM_MAX_SEARCH_RESULTS = int(os.getenv("LLM_MAX_SEARCH_RESULTS", "5"))
+
+# LLM phân loại intent (chặn câu ngoài CellphoneS) + chuẩn hóa từ khóa/đồng nghĩa
+LLM_INTENT_CLASSIFY = os.getenv("LLM_INTENT_CLASSIFY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LLM_KEYWORD_NORMALIZE = os.getenv("LLM_KEYWORD_NORMALIZE", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Feedback training — admin duyệt feedback → few-shot LLM
+FEEDBACK_TRAINING_PATH = os.getenv(
+    "FEEDBACK_TRAINING_PATH",
+    str(Path(__file__).resolve().parent / "data" / "feedback_training.jsonl"),
+).strip()
+FEEDBACK_TRAINING_ENABLED = os.getenv("FEEDBACK_TRAINING_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+FEEDBACK_TRAINING_MAX_EXAMPLES = int(os.getenv("FEEDBACK_TRAINING_MAX_EXAMPLES", "6"))
 
 # Session persistence (SQLite) — giữ context qua restart
 SESSION_PERSISTENCE = os.getenv("SESSION_PERSISTENCE", "1").strip().lower() in {
@@ -106,6 +179,10 @@ SESSION_PERSISTENCE = os.getenv("SESSION_PERSISTENCE", "1").strip().lower() in {
 SESSION_DB_PATH = os.getenv(
     "SESSION_DB_PATH",
     str(Path(__file__).resolve().parent / "sessions.db"),
+).strip()
+USER_NAMES_CACHE_PATH = os.getenv(
+    "USER_NAMES_CACHE_PATH",
+    str(Path(__file__).resolve().parent / "var" / "user_names.json"),
 ).strip()
 
 # Cart / Payment / SSO — trả góp (cps-nuxt-standard .prod.env)
@@ -167,3 +244,12 @@ BYTEPLUS_BASE_URL = os.getenv(
     "BYTEPLUS_BASE_URL",
     _byteplus_default_base_url(),
 ).strip()
+
+
+def active_llm_model() -> str:
+    """Model/endpoint đang cấu hình cho LLM_PROVIDER."""
+    if LLM_PROVIDER == "deepseek":
+        return DEEPSEEK_MODEL
+    if LLM_PROVIDER == "byteplus":
+        return BYTEPLUS_ENDPOINT_ID or BYTEPLUS_MODEL or "byteplus"
+    return GEMINI_MODEL
