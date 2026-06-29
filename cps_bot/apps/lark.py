@@ -23,6 +23,7 @@ from typing import Any
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
+    DeleteMessageRequest,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
     UpdateMessageRequest,
@@ -50,6 +51,7 @@ from cps_bot.feedback.feedback import (
     build_lark_feedback_form_card,
     build_lark_feedback_thanks_card,
     build_lark_interactive_card,
+    build_lark_status_card,
     lark_interactive_content,
     parse_lark_feedback_payload,
     record_message_feedback,
@@ -88,6 +90,7 @@ from cps_bot.llm.gemini_client import (
     analyze_product_with_meta,
     extract_compare_product_queries,
     extract_search_keywords,
+    is_affirmative_follow_up,
     is_contextual_follow_up,
     llm_provider_display_name,
     needs_query_expansion,
@@ -431,7 +434,10 @@ def _should_process_group_message(
         )
         session = topic_session if topic_session.get("turns") else user_session
         ctx = format_context_block(session)
-        if ctx and is_contextual_follow_up(user_text, ctx):
+        if ctx and (
+            is_contextual_follow_up(user_text, ctx)
+            or is_affirmative_follow_up(user_text)
+        ):
             _activate_topic(msg, chat_id=chat_id)
             return True, "session_follow_up"
 
@@ -479,24 +485,37 @@ class LarkMessenger:
         return ""
 
     def update_status(self, text: str) -> None:
+        card = build_lark_status_card(text)
+        payload = lark_interactive_content(card)
         if not self.status_message_id:
-            self.status_message_id = self.reply(text)
+            self.status_message_id = self.reply_interactive(card)
             return
-        if not self._update(self.status_message_id, text):
+        if not self._update(self.status_message_id, payload, msg_type="interactive"):
             logger.warning("Không cập nhật được trạng thái — giữ tin cũ")
 
     def send_final(self, text: str) -> str:
         if self.status_message_id:
-            if self._update(self.status_message_id, text, msg_type="text"):
+            payload = lark_interactive_content(build_lark_status_card(text))
+            if self._update(self.status_message_id, payload, msg_type="interactive"):
                 return self.status_message_id
+            self._clear_status_message()
         return self.reply(text)
 
     def send_final_interactive(self, card: dict[str, Any]) -> str:
-        # Lark không cho update tin text → interactive (lỗi invalid msg_type).
-        # Rút gọn tin trạng thái cũ, gửi card interactive reply mới.
+        payload = lark_interactive_content(card)
         if self.status_message_id:
-            self._update(self.status_message_id, "✅", msg_type="text")
+            if self._update(self.status_message_id, payload, msg_type="interactive"):
+                return self.status_message_id
+            logger.info(
+                "Lark không PATCH được card — xóa tin trạng thái rồi gửi card mới"
+            )
+            self._clear_status_message()
         return self.reply_interactive(card)
+
+    def _clear_status_message(self) -> None:
+        if self.status_message_id:
+            self._delete(self.status_message_id)
+            self.status_message_id = None
 
     def reply_interactive(self, card: dict[str, Any]) -> str:
         request = (
@@ -547,9 +566,27 @@ class LarkMessenger:
         response = self.client.im.v1.message.update(request)
         if not response.success():
             logger.warning(
-                "Lark update lỗi: code=%s msg=%s",
+                "Lark update lỗi: code=%s msg=%s message_id=%s",
                 response.code,
                 response.msg,
+                message_id,
+            )
+            return False
+        return True
+
+    def _delete(self, message_id: str) -> bool:
+        request = (
+            DeleteMessageRequest.builder()
+            .message_id(message_id)
+            .build()
+        )
+        response = self.client.im.v1.message.delete(request)
+        if not response.success():
+            logger.warning(
+                "Lark delete lỗi: code=%s msg=%s message_id=%s",
+                response.code,
+                response.msg,
+                message_id,
             )
             return False
         return True

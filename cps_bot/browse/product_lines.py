@@ -36,6 +36,8 @@ _PRODUCT_LINE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgalaxy\s+z\s+fold\b|\bz\s+fold\b|\bgalaxy\s+fold\b", re.I), "galaxy_fold"),
     (re.compile(r"\bgalaxy\s+z\s+flip\b|\bz\s+flip\b|\bgalaxy\s+flip\b", re.I), "galaxy_flip"),
     (re.compile(r"\bgalaxy\s+z\b", re.I), "galaxy_z"),
+    (re.compile(r"\bs\d{2}\s*(?:ultra|plus|\+|fe|e|u)\b", re.I), "galaxy_s"),
+    (re.compile(r"\bs\d{2}u\b", re.I), "galaxy_s"),
     (re.compile(r"\bgalaxy\s+s\b|\bgalaxy\s+s\d", re.I), "galaxy_s"),
     (re.compile(r"\bgalaxy\s+a\b|\bgalaxy\s+a\d", re.I), "galaxy_a"),
     (re.compile(r"\bgalaxy\s+tab\b", re.I), "galaxy_tab"),
@@ -235,6 +237,7 @@ _PRODUCT_LINE_HINTS = frozenset({
     "mac mini", "mac studio", "macbook neo", "macbook air", "macbook pro", "macbook", "imac",
     "iphone", "ipad", "airpods", "apple watch",
     "galaxy", "samsung", "redmi", "poco", "xiaomi", "oppo", "vivo", "realme", "nokia", "honor", "huawei",
+    "s24", "s25", "s26", "s23", "s22",
     "asus", "dell", "lenovo", "hp", "acer", "msi", "surface", "thinkpad", "vivobook", "zenbook", "rog",
     "playstation", "ps5", "xbox", "nintendo", "switch",
     "pin dự phòng", "pin du phong", "tai nghe", "loa", "smartwatch",
@@ -250,7 +253,8 @@ class ProductSignatures:
 
 def _fold(text: str) -> str:
     s = unicodedata.normalize("NFD", (text or "").lower())
-    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.replace("đ", "d")
 
 
 def extract_product_lines(text: str) -> frozenset[str]:
@@ -379,13 +383,9 @@ def required_model_phrases(text: str) -> list[str]:
     if iphone_gen:
         phrases.append(f"iphone {iphone_gen.group(1)}")
 
-    galaxy_gen = re.search(r"\bgalaxy\s+s?(\d{1,2})\b", folded)
+    galaxy_gen = re.search(r"\b(?:galaxy\s+)?s(\d{2})\b", folded)
     if galaxy_gen:
         phrases.append(f"galaxy s{galaxy_gen.group(1)}")
-
-    s24 = re.search(r"\bs24\b|\bgalaxy\s+s24\b", folded)
-    if s24 and "galaxy s24" not in phrases:
-        phrases.append("galaxy s24")
 
     return phrases
 

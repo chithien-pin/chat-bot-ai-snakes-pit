@@ -16,6 +16,7 @@ from cps_bot.browse.budget_browse import is_budget_browse_query
 from cps_bot.cps.cps_provinces import resolve_province_from_text
 from cps_bot.llm.gemini_client import (
     extract_compare_product_queries,
+    is_affirmative_follow_up,
     is_contextual_follow_up,
     _mentions_new_product,
 )
@@ -319,6 +320,7 @@ def resolve_message_intent(
         and (
             is_follow_up
             or is_contextual_follow_up(text, conversation_context)
+            or is_affirmative_follow_up(text)
         )
     ):
         return MessageIntent("product")

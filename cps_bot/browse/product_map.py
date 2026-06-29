@@ -27,6 +27,8 @@ _STORAGE_RE = re.compile(
 )
 _CHIP_PRO_RE = re.compile(r"\b(?:a\d+|m\d+)\s*pro\b", re.I)
 _M_CHIP_RE = re.compile(r"\bm([1-5])\b", re.I)
+_GALAXY_S_GEN_RE = re.compile(r"\b(?:samsung\s+)?(?:galaxy\s+)?s(\d{2})\b", re.I)
+_GALAXY_S_GEN_IN_NAME_RE = re.compile(r"\bgalaxy\s*s(\d{2})\b", re.I)
 _SCREEN_INCHES = frozenset({"13", "14", "15", "16"})
 _MACBOOK_ACCESSORY_HINTS = (
     "bo dan", "bộ dán", "dan macbook", "dán macbook", "innostyle", "zeelot",
@@ -85,7 +87,8 @@ class ProductMapHit:
 
 def _fold(text: str) -> str:
     s = unicodedata.normalize("NFD", (text or "").lower())
-    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.replace("đ", "d")
 
 
 def _tokenize(text: str) -> set[str]:
@@ -127,6 +130,8 @@ def _brand_families(folded: str) -> set[str]:
     if "imac" in folded:
         families.add("imac")
     if "galaxy" in folded or ("samsung" in folded and re.search(r"\bs\d", folded)):
+        families.add("galaxy")
+    if re.search(r"\bs\d{2}\b", folded):
         families.add("galaxy")
     if "redmi" in folded:
         families.add("redmi")
@@ -268,6 +273,14 @@ def compute_map_match_confidence(keywords: str, entry_name: str) -> float:
 
     for phrase in _required_model_phrases(query_folded):
         if phrase not in entry_folded:
+            return 0.0
+
+    galaxy_gen = _GALAXY_S_GEN_RE.search(query_folded)
+    if galaxy_gen:
+        gen = galaxy_gen.group(1)
+        if not re.search(rf"\bgalaxy\s*s{gen}\b", entry_folded):
+            return 0.0
+        if "apple watch" in entry_folded or re.search(r"\bwatch\s+ultra\b", entry_folded):
             return 0.0
 
     query_storage = _storage_tokens(keywords)
@@ -482,6 +495,32 @@ def _score_entry(
             and gen_match
         ):
             points += 24
+
+    galaxy_gen = _GALAXY_S_GEN_RE.search(query_folded)
+    if galaxy_gen:
+        gen = galaxy_gen.group(1)
+        if re.search(rf"\bgalaxy\s*s{gen}\b", folded_name):
+            points += 40
+            if "ultra" in query_tokens and "ultra" in folded_name:
+                points += 18
+            elif "plus" in query_tokens and "plus" in folded_name:
+                points += 14
+        elif _GALAXY_S_GEN_IN_NAME_RE.search(folded_name):
+            entry_gen = _GALAXY_S_GEN_IN_NAME_RE.search(folded_name)
+            if entry_gen and entry_gen.group(1) != gen:
+                points -= 80
+        elif re.search(rf"\bs{gen}\b", query_folded) and not re.search(
+            rf"\bs{gen}\b", folded_name
+        ):
+            points -= 55
+        if "apple watch" in folded_name or re.search(
+            r"\bwatch\s+ultra\b", folded_name
+        ):
+            points -= 120
+        if "ultra tab" in folded_name or re.search(r"\bultra\s+tab\b", folded_name):
+            points -= 80
+        if any(h in folded_name for h in ("op lung", "ốp lưng", "bao da")):
+            points -= 70
 
     return points
 

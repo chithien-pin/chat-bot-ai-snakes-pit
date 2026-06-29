@@ -70,6 +70,20 @@ def test_shop_matches_q9_format() -> None:
     assert not _shop_matches_location(shop, "quận 10")
 
 
+def test_extract_q5_and_district_stock_intent() -> None:
+    from cps_bot.cps.cps_api import (
+        classify_question_scenarios,
+        is_district_stock_query,
+        should_attach_shop_stock,
+    )
+
+    q = "s26 ultra đen có hàng ở q5 không"
+    assert extract_location_hint(q) == "quận 5", extract_location_hint(q)
+    assert is_district_stock_query(q)
+    assert should_attach_shop_stock(q)
+    assert classify_question_scenarios(q)["shop_stock"]
+
+
 if __name__ == "__main__":
     test_extract_quan_9()
     test_extract_q_abbrev()

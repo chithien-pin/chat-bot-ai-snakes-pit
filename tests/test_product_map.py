@@ -119,8 +119,36 @@ def test_real_map_iphone_16_xanh_luu_ly() -> None:
     assert hit.name == "iPhone 16"
 
 
+def test_real_map_s26_ultra_den_not_apple_watch() -> None:
+    """s26 ultra đen không được map nhầm Apple Watch Ultra."""
+    if not Path(config.PRODUCT_MAP_PATH).is_file():
+        return
+    clear_product_map_cache()
+    hit = resolve_product_from_map("s26 ultra đen có hàng ở q5 không")
+    assert hit is not None, "phải resolve Galaxy S26 Ultra từ map"
+    assert "Galaxy S26 Ultra" in hit.name, hit.name
+    assert "Apple Watch" not in hit.name, hit.name
+    assert hit.product_id in {"125121", "125128", "125131"}, hit
+
+
+def test_tokenize_vietnamese_den() -> None:
+    from cps_bot.browse.product_map import _tokenize
+
+    assert "den" in _tokenize("s26 ultra đen")
+
+
+def test_expand_galaxy_s_shorthand() -> None:
+    from cps_bot.browse.product_term_synonyms import normalize_product_terms
+
+    assert normalize_product_terms("s26 ultra đen") == "samsung galaxy s26 ultra đen"
+    assert normalize_product_terms("s26u") == "samsung galaxy s26 ultra"
+
+
 if __name__ == "__main__":
     test_resolve_iphone_16_pro_max_from_map()
     test_score_penalizes_used_unless_asked()
     test_real_map_has_iphone_16()
+    test_real_map_s26_ultra_den_not_apple_watch()
+    test_tokenize_vietnamese_den()
+    test_expand_galaxy_s_shorthand()
     print("OK — product map tests passed")

@@ -232,13 +232,35 @@ _INCOMING_STOCK_RE = re.compile(
 _STOCK_STATUS_QUESTION_RE = re.compile(
     r"\b("
     r"còn hàng|con hang|hết hàng|het hang|tạm hết|tam het|"
+    r"hết hàng chưa|het hang chua|"
+    r"có hàng|co hang|"
+    r"còn máy|con may|còn con|con con|"
+    r"còn bán|con ban|còn sale|con sale|"
+    r"còn không|con khong|có không|co khong|"
+    r"còn ko|con ko|còn k\b|con k\b|co ko|co k\b|"
     r"tình trạng hàng|tinh trang hang|trạng thái hàng|trang thai hang|"
     r"có bán không|co ban khong|có hàng không|co hang khong|"
     r"out of stock|in stock|"
     r"đăng ký nhận tin|dang ky nhan tin|"
     r"đặt trước được|dat truoc duoc|mua được không|mua duoc khong|"
+    r"lấy được|lay duoc|nhận tại shop|nhan tai shop|lấy tại shop|lay tai shop|"
+    r"check tồn|check stock|kiểm tra tồn|kiem tra ton|"
     r"tồn kho|ton kho|tồn tại|ton tai"
     r")\b",
+    re.IGNORECASE,
+)
+_DISTRICT_STOCK_INTENT_RE = re.compile(
+    r"\b(?:có|co|còn|con)\s+h[àa]ng\b",
+    re.IGNORECASE,
+)
+# "còn iphone không", "shop quận 1 còn máy không" — có từ xen giữa còn/có và không
+_DISTRICT_TAIL_AVAILABILITY_RE = re.compile(
+    r"\b(?:còn|co|có|con)\b.+\b(?:không|khong|ko|k)\??\s*$",
+    re.IGNORECASE,
+)
+_SHOP_DISTRICT_STOCK_RE = re.compile(
+    r"\b(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\b"
+    r".+\b(?:quận|quan|q\.?\s*\d{1,2}|q\d{1,2})\b",
     re.IGNORECASE,
 )
 _COLOR_VARIANT_LIST_RE = re.compile(
@@ -330,13 +352,17 @@ _STOCK_ID_FROM_TEXT: list[tuple[re.Pattern[str], int]] = [
 ]
 _SHOP_STOCK_QUESTION_RE = re.compile(
     r"\b("
-    r"cửa hàng|cua hang|chi nhánh|chi nhanh|shop nào|shop nao|shop mình|shop minh|"
+    r"cửa hàng|cua hang|chi nhánh|chi nhanh|cn nào|cn nao|"
+    r"shop nào|shop nao|shop mình|shop minh|shop còn|shop con|"
     r"ở đâu còn|o dau con|gần đây|gan day|lân cận|lan can|"
+    r"gần tôi|gan toi|gần mình|gan minh|gần nhất|gan nhat|"
     r"cửa hàng gần|cua hang gan|shop gần|shop gan|"
     r"xem chi nhánh|co hang o|hàng ở đâu|hang o dau|"
+    r"mua ở đâu|mua o dau|lấy ở đâu|lay o dau|"
     r"còn ở shop|còn shop|con shop|shop nào còn|shop nao con|"
-    r"còn tồn|con ton|màu nào|mau nao|"
-    r"tồn kho|ton kho|tồn tại|ton tai|kiểm tra tồn|kiem tra ton"
+    r"còn tồn|con ton|"
+    r"tồn kho|ton kho|tồn tại|ton tai|kiểm tra tồn|kiem tra ton|"
+    r"nhận tại shop|nhan tai shop|pickup|pick up"
     r")\b",
     re.IGNORECASE,
 )
@@ -350,7 +376,7 @@ _DISTRICT_HINT_RE = re.compile(
     r"(?:gần|gan\s+)?"
     r"(quận|quan|huyện|huyen|phường|phuong)\s+"
     r"(\d{1,2}|[\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{2,20})"
-    r"(?=\s+(?:shop|có|co|còn|con|tìm|tim|không|khong)\b|[?.!,]|\s|$)",
+    r"(?=\s+(?:shop|có|co|còn|con|ở|o|tìm|tim|không|khong)\b|[?.!,]|\s|$)",
     re.IGNORECASE,
 )
 # Quận/huyện không cần theo sau bởi "shop/còn" — vd. "tồn kho tại Quận 10 HCM"
@@ -363,9 +389,9 @@ _DISTRICT_AVAILABILITY_RE = re.compile(
     r"\b(có|co|còn|con)\s*(?:hàng|hang\s+)?(?:không|khong|ko|k)\b",
     re.IGNORECASE,
 )
-# Q.9, Q9, q 9 — cách viết phổ biến trên địa chỉ shop CellphoneS
+# Q.9, Q9, q5 — cách viết phổ biến trên địa chỉ shop CellphoneS
 _DISTRICT_ABBREV_RE = re.compile(
-    r"\b[qQ]\.?\s*(\d{1,2})\b",
+    r"\b[qQ]\.?\s*(\d{1,2})\b|\b[qQ](\d{1,2})\b",
 )
 _WARD_ABBREV_RE = re.compile(
     r"\b[pP]\.?\s*([\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{2,30})\b",
@@ -2495,7 +2521,7 @@ async def resolve_commerce_product_detail(
     pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
 
     hints = _extract_variant_hints(query_text)
-    color_hints, storage_hints = _split_variant_hints(hints)
+    color_hints, storage_hints, _screen_hints = _split_variant_hints(hints)
 
     if hints:
         before_id = str(detail.get("product_id") or "")
@@ -2511,7 +2537,9 @@ async def resolve_commerce_product_detail(
     if not is_commerce_detail_query(query_text):
         return detail
 
-    kw_color, kw_storage = _split_variant_hints(_extract_variant_hints(keywords))
+    kw_color, kw_storage, _kw_screen = _split_variant_hints(
+        _extract_variant_hints(keywords)
+    )
     if not hints and (kw_color or kw_storage):
         return await resolve_product_variant(
             keywords,
@@ -2562,7 +2590,7 @@ async def resolve_product_variant(
     if not hints:
         return detail
 
-    color_hints, storage_hints = _split_variant_hints(hints)
+    color_hints, storage_hints, _screen_hints = _split_variant_hints(hints)
     pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
     current_name = detail.get("name") or ""
 
@@ -3303,11 +3331,11 @@ _STOCK_AT_LOCATION_FOR_PRODUCT_RE = re.compile(
 
 def needs_shop_stock_keyword_strip(text: str) -> bool:
     """Câu hỏi tồn cửa hàng / shop theo khu vực — cần bóc tên SP trước khi search."""
-    if is_shop_stock_question(text):
+    if is_stock_availability_query(text):
         return True
     lower = (text or "").lower()
     has_shop = bool(re.search(r"\b(?:shop|cửa hàng|cua hang|chi nhánh|chi nhanh)\b", lower))
-    has_stock_ask = bool(re.search(r"\b(?:còn|co|không|khong)\b", lower))
+    has_stock_ask = bool(re.search(r"\b(?:còn|co|có|con|không|khong)\b", lower))
     has_district = bool(
         _DISTRICT_HINT_RE.search(text or "")
         or _DISTRICT_HINT_LOOSE_RE.search(text or "")
@@ -3316,7 +3344,8 @@ def needs_shop_stock_keyword_strip(text: str) -> bool:
     has_ton_kho = bool(re.search(r"\btồn kho\b|\bton kho\b", lower))
     return (
         (has_shop and has_stock_ask)
-        or (has_district and has_stock_ask and has_shop)
+        or (has_shop and has_district)
+        or (has_district and has_stock_ask)
         or (has_ton_kho and has_district)
     )
 
@@ -3387,13 +3416,36 @@ def is_shop_stock_question(text: str) -> bool:
 def is_district_stock_query(text: str) -> bool:
     """Câu có gợi ý quận/khu vực + hỏi còn hàng — vd. 'ở quận 10 có không?'."""
     value = text or ""
-    if not extract_location_hint(value):
+    hint = extract_location_hint(value)
+    if not hint:
         return False
+    if _DISTRICT_STOCK_INTENT_RE.search(value):
+        return True
+    if _DISTRICT_TAIL_AVAILABILITY_RE.search(value):
+        return True
+    if _SHOP_DISTRICT_STOCK_RE.search(value) and re.search(
+        r"\b(?:còn|co|có|con)\b", value, re.IGNORECASE
+    ):
+        return True
     return bool(
         _DISTRICT_AVAILABILITY_RE.search(value)
         or _STOCK_STATUS_QUESTION_RE.search(value)
         or _SHOP_STOCK_QUESTION_RE.search(value)
     )
+
+
+def is_stock_availability_query(text: str) -> bool:
+    """Câu hỏi tồn kho / còn hàng — online hoặc theo cửa hàng / quận / tỉnh."""
+    value = text or ""
+    if is_shop_stock_question(value):
+        return True
+    if _STOCK_STATUS_QUESTION_RE.search(value):
+        return True
+    if is_district_stock_query(value):
+        return True
+    if is_province_stock_query(value):
+        return True
+    return False
 
 
 _PROVINCE_STOCK_INTENT_RE = re.compile(
@@ -3434,13 +3486,7 @@ def should_attach_shop_stock(
     if resume:
         return True
     value = text or ""
-    if is_shop_stock_question(value):
-        return True
-    if _STOCK_STATUS_QUESTION_RE.search(value):
-        return True
-    if is_district_stock_query(value):
-        return True
-    if is_province_stock_query(value):
+    if is_stock_availability_query(value):
         return True
     # Hỏi tiếp chỉ nêu quận: "quận 10", "ở Q10" — đã có SP trong session.
     if reuse_product_context and extract_location_hint(value):
@@ -3448,6 +3494,7 @@ def should_attach_shop_stock(
     if reuse_product_context and (
         _STOCK_STATUS_QUESTION_RE.search(value)
         or _DISTRICT_AVAILABILITY_RE.search(value)
+        or _DISTRICT_TAIL_AVAILABILITY_RE.search(value)
         or _PROVINCE_STOCK_INTENT_RE.search(value)
     ):
         return True
@@ -3465,11 +3512,7 @@ def classify_question_scenarios(text: str) -> dict[str, bool]:
     value = text or ""
     return {
         "price_promotion": bool(_PRICE_QUESTION_RE.search(value)),
-        "shop_stock": (
-            is_shop_stock_question(value)
-            or is_district_stock_query(value)
-            or is_province_stock_query(value)
-        ),
+        "shop_stock": is_stock_availability_query(value),
         "trade_in": bool(_TRADE_IN_QUESTION_RE.search(value)),
         "installment": bool(_INSTALLMENT_QUESTION_RE.search(value)),
         "warranty": bool(_WARRANTY_QUESTION_RE.search(value)),
@@ -3779,7 +3822,8 @@ def extract_location_hint(text: str) -> str:
         return f"{district_loose.group(1)} {district_loose.group(2)}".strip()
     abbrev = _DISTRICT_ABBREV_RE.search(value)
     if abbrev:
-        return f"quận {abbrev.group(1)}"
+        num = abbrev.group(1) or abbrev.group(2)
+        return f"quận {num}"
     return ""
 
 

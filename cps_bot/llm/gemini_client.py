@@ -403,6 +403,15 @@ _PRIOR_PRODUCT_REF_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Xác nhận ngắn sau khi bot hỏi tiếp (vd: "Bạn cần tư vấn thêm... không?" → "có tư vấn đi")
+_AFFIRMATIVE_FOLLOW_UP_EXACT = frozenset({
+    "co", "co di", "co tu van", "co tu van di", "co tu van them",
+    "co nhe", "co a", "co luon", "co them",
+    "tu van di", "tu van them", "tu van giup", "tu van giup em",
+    "ok", "oke", "okie", "okay", "yes", "yeah", "yep",
+    "duoc", "duoc a", "duoc nhe",
+    "u", "uh", "uhm", "um", "vang", "da", "da a",
+})
 
 EXTRACT_KEYWORDS_PROMPT = """Trích từ khóa tìm sản phẩm trên CellphoneS (Việt Nam) từ câu khách.
 
@@ -742,7 +751,10 @@ def should_llm_normalize_keywords(
         return False
     if (
         conversation_context
-        and is_contextual_follow_up(t, conversation_context)
+        and (
+            is_contextual_follow_up(t, conversation_context)
+            or is_affirmative_follow_up(t)
+        )
         and not _mentions_new_product(t)
     ):
         return False
@@ -1078,6 +1090,8 @@ def _is_follow_up_question(text: str) -> bool:
     t = text.strip().lower()
     if is_inbox_accessory_question(text):
         return True
+    if is_affirmative_follow_up(text):
+        return True
     if _has_abbrev_tokens(text):
         return False
     if _mentions_new_product(text):
@@ -1116,6 +1130,45 @@ def _context_has_product(conversation_context: str) -> bool:
 def references_prior_product(text: str) -> bool:
     """Câu tham chiếu SP vừa thảo luận (sản phẩm này, cái đó...)."""
     return bool(_PRIOR_PRODUCT_REF_RE.search(text or ""))
+
+
+def is_affirmative_follow_up(text: str) -> bool:
+    """
+    Khách đồng ý / nhờ tư vấn tiếp cùng SP (vd: bot hỏi KM/phụ kiện → "có tư vấn đi").
+    Không nhắc tên SP mới — chỉ xác nhận ngắn.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if _mentions_new_product(raw):
+        return False
+    if references_prior_product(raw):
+        return False
+    if _ATTRIBUTE_FOLLOW_UP_RE.search(raw):
+        return False
+    if len(raw.split()) > 6:
+        return False
+    folded = re.sub(r"[^\w\s]", "", _fold(raw))
+    folded = re.sub(r"\s+", " ", folded).strip()
+    if not folded:
+        return False
+    if folded in _AFFIRMATIVE_FOLLOW_UP_EXACT:
+        return True
+    if folded.startswith("co ") and folded.endswith(" di"):
+        return True
+    if folded.startswith("tu van ") and folded.endswith(" di"):
+        return True
+    if re.fullmatch(r"ok(?:\s+(?:nhe|a|di|luon))?", folded):
+        return True
+    return False
+
+
+def _fold(text: str) -> str:
+    import unicodedata
+
+    s = unicodedata.normalize("NFD", (text or "").lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.replace("đ", "d")
 
 
 _IPHONE_GEN_RE = re.compile(r"\biphone\s*(\d{1,2})\b", re.IGNORECASE)
@@ -1217,6 +1270,8 @@ def identity_compatible_with_session(
         return False
     if is_color_variant_query(query):
         return True
+    if is_affirmative_follow_up(query):
+        return True
     if _mentions_new_product(query) and not references_prior_product(query):
         return False
     return True
@@ -1260,6 +1315,9 @@ def should_reuse_product_identity(
     if references_prior_product(query):
         return True
 
+    if is_affirmative_follow_up(query):
+        return True
+
     if _mentions_new_product(query):
         return False
 
@@ -1281,6 +1339,8 @@ def _try_reuse_context_keywords(
     if product_context_conflict(original, ctx_product):
         return None
     if references_prior_product(original):
+        return _reuse_keywords_from_context(original, conversation_context)
+    if is_affirmative_follow_up(original):
         return _reuse_keywords_from_context(original, conversation_context)
     if _mentions_new_product(original):
         return None
@@ -1308,6 +1368,8 @@ def is_contextual_follow_up(
     from cps_bot.cps.cps_api import is_color_variant_query
 
     if is_color_variant_query(text):
+        return True
+    if is_affirmative_follow_up(text):
         return True
     if _mentions_new_product(text):
         return False
@@ -1391,6 +1453,11 @@ def extract_search_keywords(
         keywords = strip_budget_phrases_for_keywords(original)
         logger.info("Từ khóa (budget browse): %r → %r", original, keywords)
         return keywords
+
+    if conversation_context and is_affirmative_follow_up(original):
+        reused = _try_reuse_context_keywords(original, conversation_context)
+        if reused:
+            return reused
 
     new_topic = _mentions_new_product(original)
 

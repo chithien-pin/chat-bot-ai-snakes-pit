@@ -130,6 +130,28 @@ def test_extract_keywords_screen_inch_from_context() -> None:
     )
 
 
+def test_affirmative_follow_up_co_tu_van_di() -> None:
+    from cps_bot.llm.gemini_client import (
+        extract_search_keywords,
+        is_affirmative_follow_up,
+        is_contextual_follow_up,
+        should_reuse_product_identity,
+    )
+
+    ctx = _ctx("samsung galaxy s26 ultra", "Samsung Galaxy S26 Ultra 16GB 1TB")
+    q = "có tư vấn đi"
+    assert is_affirmative_follow_up(q)
+    assert is_contextual_follow_up(q, ctx)
+    assert should_reuse_product_identity(
+        q,
+        ctx,
+        last_keywords="samsung galaxy s26 ultra",
+        last_product_name="Samsung Galaxy S26 Ultra",
+    )
+    kw = extract_search_keywords(q, ctx, use_llm=False)
+    assert "s26" in kw.lower() or "galaxy" in kw.lower(), f"keyword sai: {kw!r}"
+
+
 if __name__ == "__main__":
     test_follow_up_mau_sac_gia_ban()
     test_new_product_not_follow_up()

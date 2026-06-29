@@ -195,6 +195,26 @@ def parse_lark_feedback_payload(
     return {**meta, "step": "submit", "user_comment": user_comment}
 
 
+def _lark_card_config() -> dict[str, Any]:
+    """Config card Lark — update_multi bắt buộc để PATCH tin card tại chỗ."""
+    return {"wide_screen_mode": True, "update_multi": True}
+
+
+def build_lark_status_card(status_text: str) -> dict[str, Any]:
+    """Card trạng thái tạm — cập nhật in-place thành card tư vấn cuối."""
+    body = (status_text or "").strip() or "🔍 Đang xử lý..."
+    return {
+        "config": _lark_card_config(),
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": "Tư vấn CellphoneS"},
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+        ],
+    }
+
+
 def build_lark_interactive_card(
     text: str,
     *,
@@ -253,7 +273,7 @@ def build_lark_interactive_card(
         ]
     )
     return {
-        "config": {"wide_screen_mode": True},
+        "config": _lark_card_config(),
         "header": {
             "template": "blue",
             "title": {"tag": "plain_text", "content": "Tư vấn CellphoneS"},
@@ -324,7 +344,7 @@ def build_lark_feedback_form_card(
         ]
     )
     return {
-        "config": {"wide_screen_mode": True},
+        "config": _lark_card_config(),
         "header": {
             "template": "blue",
             "title": {"tag": "plain_text", "content": "Tư vấn CellphoneS"},
@@ -347,7 +367,7 @@ def build_lark_feedback_thanks_card(
     elements = _feedback_card_prefix_elements(answer_body)
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": thanks}})
     return {
-        "config": {"wide_screen_mode": True},
+        "config": _lark_card_config(),
         "header": {
             "template": "blue",
             "title": {"tag": "plain_text", "content": "Tư vấn CellphoneS"},
