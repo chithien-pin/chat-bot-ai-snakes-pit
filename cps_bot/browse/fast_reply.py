@@ -195,6 +195,7 @@ def slim_payload_for_llm(payload: dict[str, Any], *, max_results: int = 5) -> di
         "installment",
         "extended_warranty",
         "instock_other_provinces",
+        "recommended_products",
     ):
         if payload.get(key):
             slim[key] = payload[key]

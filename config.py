@@ -126,6 +126,8 @@ PRODUCT_MAP_ENABLED = os.getenv("PRODUCT_MAP_ENABLED", "1").strip().lower() in {
     "on",
 }
 PRODUCT_MAP_MIN_SCORE = int(os.getenv("PRODUCT_MAP_MIN_SCORE", "25"))
+# Độ khớp tối thiểu (0–1) giữa câu hỏi và tên SP map — dưới ngưỡng → fallback search API
+PRODUCT_MAP_MIN_CONFIDENCE = float(os.getenv("PRODUCT_MAP_MIN_CONFIDENCE", "0.6"))
 
 # Latency — browse list trả template (không LLM); payload LLM gọn hơn
 FAST_BROWSE_REPLY = os.getenv("FAST_BROWSE_REPLY", "1").strip().lower() in {
@@ -190,6 +192,14 @@ CPS_API_BASE_URL = os.getenv(
     "CPS_API_BASE_URL",
     "https://api.cellphones.com.vn",
 ).strip().rstrip("/")
+# Gợi ý phụ kiện / sản phẩm mua cùng (recommendation API)
+CPS_RECOMMENDATION_ENABLED = os.getenv("CPS_RECOMMENDATION_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+CPS_RECOMMENDATION_MAX_PRODUCTS = int(os.getenv("CPS_RECOMMENDATION_MAX_PRODUCTS", "5"))
 CPS_PAYMENT_VER = os.getenv("CPS_PAYMENT_VER", "v3").strip()
 CPS_SSO_GUEST_TOKEN_URL = os.getenv(
     "CPS_SSO_GUEST_TOKEN_URL",

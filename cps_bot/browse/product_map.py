@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from config import PRODUCT_MAP_ENABLED, PRODUCT_MAP_MIN_SCORE, PRODUCT_MAP_PATH
+from config import (
+    PRODUCT_MAP_ENABLED,
+    PRODUCT_MAP_MIN_CONFIDENCE,
+    PRODUCT_MAP_MIN_SCORE,
+    PRODUCT_MAP_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,13 @@ _LINE_RE = re.compile(r"^\s*(\d+)\s*-\s*(.+?)\s*$")
 _STORAGE_RE = re.compile(
     r"\b(64|128|256|512|1024)\s*(?:gb|g)\b|\b(1|2)\s*tb\b",
     re.I,
+)
+_CHIP_PRO_RE = re.compile(r"\b(?:a\d+|m\d+)\s*pro\b", re.I)
+_M_CHIP_RE = re.compile(r"\bm([1-5])\b", re.I)
+_SCREEN_INCHES = frozenset({"13", "14", "15", "16"})
+_MACBOOK_ACCESSORY_HINTS = (
+    "bo dan", "bộ dán", "dan macbook", "dán macbook", "innostyle", "zeelot",
+    "6in1", "6 in 1", "for macbook", "cho macbook", "ốp macbook", "op macbook",
 )
 _USED_NAME_HINTS = (
     "cũ", "cu ", " cu", "đã kích hoạt", "da kich hoat",
@@ -40,6 +52,13 @@ _COLOR_QUERY_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_COLOR_TOKENS = frozenset({
+    "hong", "den", "trang", "xanh", "titan", "vang", "tim", "cam", "bac",
+    "luu", "ly", "mong", "ket", "ultramarine",
+})
+_MODEL_DISTINCT_TOKENS = frozenset({
+    "neo", "air", "ultra", "plus", "mini", "se", "fold", "flip", "fe",
+})
 
 _STOP_TOKENS = frozenset({
     "mã", "ma", "giá", "gia", "cho", "mình", "minh", "còn", "co",
@@ -61,6 +80,7 @@ class ProductMapHit:
     product_id: str
     name: str
     score: int
+    confidence: float
 
 
 def _fold(text: str) -> str:
@@ -90,6 +110,202 @@ def _is_map_query(keywords: str) -> bool:
     if kw.startswith("http") or ".html" in kw:
         return False
     return True
+
+
+def _brand_families(folded: str) -> set[str]:
+    families: set[str] = set()
+    if "macbook" in folded:
+        families.add("macbook")
+    if "mac mini" in folded or re.search(r"\bmacmini\b", folded):
+        families.add("mac_mini")
+    if "mac studio" in folded:
+        families.add("mac_studio")
+    if "iphone" in folded:
+        families.add("iphone")
+    if "ipad" in folded:
+        families.add("ipad")
+    if "imac" in folded:
+        families.add("imac")
+    if "galaxy" in folded or ("samsung" in folded and re.search(r"\bs\d", folded)):
+        families.add("galaxy")
+    if "redmi" in folded:
+        families.add("redmi")
+    if "xiaomi" in folded:
+        families.add("xiaomi")
+    if "oppo" in folded:
+        families.add("oppo")
+    if "vivo" in folded:
+        families.add("vivo")
+    if "realme" in folded:
+        families.add("realme")
+    return families
+
+
+def _required_model_phrases(folded: str) -> list[str]:
+    """Cụm model bắt buộc phải có trong tên SP nếu user nhắc."""
+    from cps_bot.browse.product_lines import required_model_phrases
+
+    return required_model_phrases(folded)
+
+
+def _m_chips(text: str) -> set[str]:
+    """Chip Apple Silicon M1–M5 trong câu hỏi/tên SP."""
+    folded = _fold(text)
+    return {f"m{m.group(1)}" for m in _M_CHIP_RE.finditer(folded)}
+
+
+def _screen_inches(text: str, tokens: set[str] | None = None) -> set[str]:
+    """Kích thước màn hình laptop (inch), không nhầm 16GB RAM."""
+    folded = _fold(text)
+    tok = tokens if tokens is not None else _tokenize(text)
+    sizes: set[str] = set()
+    for sz in _SCREEN_INCHES:
+        if re.search(rf"\b{sz}\s*(?:inch|\"|in)\b", folded):
+            sizes.add(sz)
+        elif sz in tok and f"{sz}gb" not in tok:
+            sizes.add(sz)
+    return sizes
+
+
+def _macbook_accessory_penalty(folded_name: str, name_lower: str) -> int:
+    hints = _ACCESSORY_NAME_HINTS + _MACBOOK_ACCESSORY_HINTS
+    if any(h in name_lower or h in folded_name for h in hints):
+        return 80
+    return 0
+
+
+def _apple_silicon_score_adjustment(
+    query_folded: str,
+    query_tokens: set[str],
+    folded_name: str,
+    entry_tokens: frozenset[str],
+) -> int:
+    """Khớp/ lệch thế hệ chip M và kích thước màn hình MacBook."""
+    if "macbook" not in query_folded:
+        return 0
+
+    points = 0
+    q_chips = _m_chips(query_folded)
+    e_chips = _m_chips(folded_name)
+    if q_chips:
+        if e_chips:
+            if q_chips & e_chips:
+                points += 40
+            else:
+                points -= 90
+        elif any(chip in folded_name for chip in ("m1", "m2", "m3", "m4")):
+            points -= 90
+        elif re.search(r"\b202[12]\b", folded_name):
+            points -= 70
+
+    q_sizes = _screen_inches(query_folded, query_tokens)
+    e_sizes = _screen_inches(folded_name, set(entry_tokens))
+    if q_sizes and e_sizes:
+        if q_sizes & e_sizes:
+            points += 25
+        else:
+            points -= 55
+
+    return points
+
+
+def _is_chip_pro_reference(folded_name: str) -> bool:
+    """A18 Pro / M3 Pro trong tên chip — không phải dòng Pro của iPhone."""
+    return bool(_CHIP_PRO_RE.search(folded_name))
+
+
+def _entry_has_tier_pro(folded_name: str) -> bool:
+    """Dòng Pro/Pro Max thật (iPhone Pro, MacBook Pro), không tính chip Pro."""
+    if "pro max" in folded_name:
+        return True
+    if not re.search(r"\bpro\b", folded_name):
+        return False
+    if _is_chip_pro_reference(folded_name):
+        return False
+    if "macbook pro" in folded_name:
+        return True
+    if re.search(r"\biphone\b", folded_name):
+        return True
+    if re.search(r"\bipad\b", folded_name):
+        return True
+    return False
+
+
+def compute_map_match_confidence(keywords: str, entry_name: str) -> float:
+    """
+    Độ khớp 0–1 giữa câu hỏi user và tên SP map.
+    Dùng để từ chối map hit yếu và fallback GraphQL search.
+    """
+    query_folded = _fold(keywords)
+    entry_folded = _fold(entry_name)
+    query_tokens = _tokenize(keywords)
+    if not query_tokens:
+        return 0.0
+
+    q_brands = _brand_families(query_folded)
+    e_brands = _brand_families(entry_folded)
+    if q_brands and e_brands and not (q_brands & e_brands):
+        return 0.0
+
+    q_chips = _m_chips(query_folded)
+    e_chips = _m_chips(entry_folded)
+    if q_chips:
+        if e_chips and not (q_chips & e_chips):
+            return 0.0
+        if not e_chips and (
+            any(chip in entry_folded for chip in ("m1", "m2", "m3", "m4"))
+            or re.search(r"\b202[12]\b", entry_folded)
+        ):
+            return 0.0
+
+    q_sizes = _screen_inches(query_folded, query_tokens)
+    e_sizes = _screen_inches(entry_folded)
+    if q_sizes and e_sizes and not (q_sizes & e_sizes):
+        return 0.0
+
+    if "macbook" in query_folded and _macbook_accessory_penalty(entry_folded, entry_folded):
+        return 0.0
+
+    for phrase in _required_model_phrases(query_folded):
+        if phrase not in entry_folded:
+            return 0.0
+
+    query_storage = _storage_tokens(keywords)
+    weighted_hits = 0.0
+    weighted_total = 0.0
+    for token in query_tokens:
+        if token in query_storage:
+            weight = 0.2
+        elif token in _COLOR_TOKENS:
+            weight = 0.25
+        elif token in q_brands or token in _MODEL_DISTINCT_TOKENS:
+            weight = 1.0
+        else:
+            weight = 0.55
+        weighted_total += weight
+        if token in entry_folded:
+            weighted_hits += weight
+
+    if weighted_total <= 0:
+        return 0.0
+
+    ratio = weighted_hits / weighted_total
+
+    non_variant = {
+        t
+        for t in query_tokens
+        if t not in query_storage and t not in _COLOR_TOKENS
+    }
+    variant_only = bool(query_storage or _COLOR_QUERY_RE.search(query_folded))
+    if len(non_variant) >= 2:
+        matched_core = sum(1 for t in non_variant if t in entry_folded)
+        core_ratio = matched_core / len(non_variant)
+        if core_ratio < 0.5:
+            ratio *= max(0.35, core_ratio)
+        elif variant_only and matched_core == len(non_variant):
+            ratio = min(1.0, ratio + 0.08)
+
+    return round(min(1.0, max(0.0, ratio)), 3)
 
 
 @lru_cache(maxsize=1)
@@ -144,9 +360,13 @@ def _score_entry(
     if not query_tokens:
         return 0
 
+    q_brands = _brand_families(query_folded)
+    e_brands = _brand_families(entry.text_folded)
+    if q_brands and e_brands and not (q_brands & e_brands):
+        return 0
+
     overlap = query_tokens & entry.tokens
     if not overlap:
-        # Cho phép khớp chuỗi con dài (vd: wh-1000xm5)
         if len(query_folded) >= 6 and query_folded in entry.text_folded:
             overlap = query_tokens
         else:
@@ -157,7 +377,6 @@ def _score_entry(
         if len(token) >= 2 and token in entry.text_folded:
             points += 4
 
-    # Ưu tiên tên ngắn gọn khi overlap tương đương
     points -= max(0, len(entry.tokens) - len(query_tokens)) * 2
 
     name_lower = entry.name.lower()
@@ -166,6 +385,23 @@ def _score_entry(
         points -= 25
     if phone_query and any(h in name_lower for h in _ACCESSORY_NAME_HINTS):
         points -= 50
+    if "macbook" in query_folded:
+        points -= _macbook_accessory_penalty(folded_name, name_lower)
+        points += _apple_silicon_score_adjustment(
+            query_folded, query_tokens, folded_name, entry.tokens
+        )
+
+    if "macbook" in query_tokens and "neo" in query_tokens:
+        if "macbook" in entry.tokens and "neo" in entry.tokens:
+            points += 40
+        elif "macbook" not in entry.tokens or "neo" not in entry.tokens:
+            points -= 50
+
+    non_variant = query_tokens - query_storage - _COLOR_TOKENS
+    if query_storage and len(non_variant) >= 2:
+        core_overlap = non_variant & entry.tokens
+        if query_storage & _storage_tokens(entry.name) and len(core_overlap) < len(non_variant):
+            points -= 45
 
     if "pro max" in query_folded and "pro max" in folded_name:
         points += 20
@@ -196,7 +432,7 @@ def _score_entry(
         and phone_query
         and gen_match
         and "plus" not in folded_name
-        and not re.search(r"\bpro\b", folded_name)
+        and not _entry_has_tier_pro(folded_name)
         and re.fullmatch(r"iphone \d{1,2}", folded_name)
     ):
         points += 16
@@ -214,14 +450,14 @@ def _score_entry(
         if "pro max" not in folded_name:
             points -= 18
     elif "pro" in query_tokens:
-        if "pro" not in folded_name:
+        if not _entry_has_tier_pro(folded_name):
             points -= 12
         elif "pro max" in folded_name:
             points -= 10
     else:
         if "pro max" in folded_name:
             points -= 22
-        elif re.search(r"\bpro\b", folded_name):
+        elif _entry_has_tier_pro(folded_name):
             points -= 16
         if "plus" in folded_name and "plus" not in query_tokens:
             points -= 50
@@ -242,7 +478,7 @@ def _score_entry(
             query_storage
             and not entry_storage
             and "plus" not in folded_name
-            and not re.search(r"\bpro\b", folded_name)
+            and not _entry_has_tier_pro(folded_name)
             and gen_match
         ):
             points += 24
@@ -271,7 +507,7 @@ def _pick_map_ambiguity_winner(
     query_folded: str,
     query_tokens: set[str],
 ) -> ProductMapEntry | None:
-    """Chọn 1 entry khi điểm map sát nhau — ưu tiên bản base, tên ngắn."""
+    """Chọn 1 entry khi điểm map sát nhau — ưu tiên khớp brand/model phrase."""
     if not ranked:
         return None
     best_score = ranked[0][0]
@@ -279,12 +515,21 @@ def _pick_map_ambiguity_winner(
     if len(candidates) == 1:
         return candidates[0]
 
-    def tie_key(entry: ProductMapEntry) -> tuple[int, int, int]:
+    q_brands = _brand_families(query_folded)
+    required_phrases = _required_model_phrases(query_folded)
+
+    def tie_key(entry: ProductMapEntry) -> tuple[float, int, int, int]:
         folded = entry.text_folded
-        points = 0
+        conf = compute_map_match_confidence(query_folded, entry.name)
+        points = int(conf * 100)
+        if q_brands and not (q_brands & _brand_families(folded)):
+            points -= 200
+        for phrase in required_phrases:
+            if phrase not in folded:
+                points -= 80
         if "pro max" in folded and "pro max" not in query_folded:
             points -= 35
-        elif re.search(r"\bpro\b", folded) and "pro" not in query_tokens:
+        elif _entry_has_tier_pro(folded) and "pro" not in query_tokens:
             points -= 25
         if "plus" in folded and "plus" not in query_tokens:
             points -= 35
@@ -300,7 +545,7 @@ def _pick_map_ambiguity_winner(
             points -= 35
         if re.fullmatch(r"iphone \d{1,2}", folded):
             points += 20
-        return (points, -len(entry.tokens), -len(entry.name))
+        return (points, -len(entry.tokens), -len(entry.name), 0)
 
     return max(candidates, key=tie_key)
 
@@ -347,13 +592,30 @@ def resolve_product_from_map(keywords: str) -> ProductMapHit | None:
     best_score, best_entry = ranked[0]
     second_score = ranked[1][0] if len(ranked) > 1 else 0
 
+    winner = best_entry
     if second_score and best_score - second_score < 5:
-        winner = _pick_map_ambiguity_winner(ranked[:8], query_folded, query_tokens)
-        if winner:
-            return ProductMapHit(winner.product_id, winner.name, best_score)
+        picked = _pick_map_ambiguity_winner(ranked[:12], query_folded, query_tokens)
+        if not picked:
+            return None
+        winner = picked
+
+    confidence = compute_map_match_confidence(keywords, winner.name)
+    if confidence < PRODUCT_MAP_MIN_CONFIDENCE:
+        logger.info(
+            "Product map bỏ hit %s (confidence=%.2f < %.2f) cho %r → fallback search",
+            winner.product_id,
+            confidence,
+            PRODUCT_MAP_MIN_CONFIDENCE,
+            keywords[:80],
+        )
         return None
 
-    return ProductMapHit(best_entry.product_id, best_entry.name, best_score)
+    return ProductMapHit(
+        winner.product_id,
+        winner.name,
+        best_score,
+        confidence,
+    )
 
 
 def clear_product_map_cache() -> None:

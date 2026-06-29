@@ -55,6 +55,26 @@ def test_should_not_reuse_identity_on_topic_switch() -> None:
     )
 
 
+def test_should_not_reuse_identity_ip16_to_ip15_shorthand() -> None:
+    ctx = _ctx("iphone 16 xanh mòng két", "iPhone 16 128GB | Chính hãng VN/A-Xanh Mòng Két")
+    assert models_conflict_with_session(
+        "ip15 plus màu xanh giá bao nhiêu",
+        last_keywords="iphone 16 xanh mòng két",
+        last_product_name="iPhone 16 128GB | Chính hãng VN/A-Xanh Mòng Két",
+    )
+    assert not should_reuse_product_identity(
+        "ip15 plus màu xanh giá bao nhiêu",
+        ctx,
+        last_keywords="iphone 16 xanh mòng két",
+        last_product_name="iPhone 16 128GB | Chính hãng VN/A-Xanh Mòng Két",
+    )
+    assert not identity_compatible_with_session(
+        "ip15 plus màu xanh giá bao nhiêu",
+        last_keywords="iphone 16 xanh mòng két",
+        last_product_name="iPhone 16 128GB | Chính hãng VN/A-Xanh Mòng Két",
+    )
+
+
 def test_should_reuse_identity_on_color_follow_up() -> None:
     ctx = _ctx("iPhone 17 256GB", "iPhone 17 256GB | Chính hãng-Trắng")
     assert should_reuse_product_identity(

@@ -13,11 +13,14 @@ import httpx
 from bs4 import BeautifulSoup
 
 from config import (
+    CPS_API_BASE_URL,
     CPS_GRAPHQL_DASHBOARD_ENDPOINT,
     CPS_GRAPHQL_URL_ENDPOINT,
     CPS_GRAPHQL_V2_ENDPOINT,
     CPS_GRAPHQL_V2_PRODUCTION,
     CPS_PROVINCE_ID,
+    CPS_RECOMMENDATION_ENABLED,
+    CPS_RECOMMENDATION_MAX_PRODUCTS,
     PRODUCT_MAP_PATH,
     SERPAPI_API_KEY,
     SERPAPI_ENABLED,
@@ -1723,6 +1726,7 @@ async def _fetch_product_from_map(
     detail = normalize_product_detail(product)
     detail["product_map_matched_name"] = hit.name
     detail["product_map_score"] = hit.score
+    detail["product_map_confidence"] = hit.confidence
     if keywords:
         detail = await resolve_product_variant(keywords, detail, province_id=pid_province)
 
@@ -1737,10 +1741,11 @@ async def _fetch_product_from_map(
         }
     )
     logger.info(
-        "Product map: %r → id=%s score=%d (%s)",
+        "Product map: %r → id=%s score=%d confidence=%.2f (%s)",
         keywords,
         hit.product_id,
         hit.score,
+        hit.confidence,
         hit.name[:60],
     )
     return [search_record], detail
@@ -1748,6 +1753,15 @@ async def _fetch_product_from_map(
 
 _VARIANT_STORAGE_RE = re.compile(
     r"\b(64|128|256|512|1024)\s*(?:gb|g)\b|\b(1|2)\s*tb\b",
+    re.IGNORECASE,
+)
+_SCREEN_INCH_VARIANT_RE = re.compile(
+    r"\b(?:b[âa]n\s+)?(13|14|15|16|17)\s*(?:inch|\"|in)\b|\b(13|14|15|16|17)inch\b",
+    re.IGNORECASE,
+)
+_MACBOOK_BARE_SCREEN_RE = re.compile(
+    r"\b(?:macbook\s+)?(?:pro|air)\s+(13|14|15|16|17)\b"
+    r"|\b(13|14|15|16|17)\s+m[1-5]\b",
     re.IGNORECASE,
 )
 _VARIANT_COLOR_HINTS: tuple[tuple[str, ...], ...] = (
@@ -1773,6 +1787,53 @@ _VARIANT_COLOR_HINTS: tuple[tuple[str, ...], ...] = (
 _COLOR_PRIMARY_HINTS = frozenset(group[0] for group in _VARIANT_COLOR_HINTS)
 
 
+def _normalize_screen_inch_hint(raw: str) -> str:
+    return f"{raw}inch"
+
+
+def _extract_screen_inch_sizes(text: str) -> list[str]:
+    """Kích thước màn hình laptop (13–17 inch) trong câu hỏi."""
+    sizes: list[str] = []
+    seen: set[str] = set()
+    lower = (text or "").lower()
+    for match in _SCREEN_INCH_VARIANT_RE.finditer(lower):
+        val = match.group(1) or match.group(2)
+        if val and val not in seen:
+            seen.add(val)
+            sizes.append(_normalize_screen_inch_hint(val))
+    for match in _MACBOOK_BARE_SCREEN_RE.finditer(lower):
+        val = match.group(1) or match.group(2)
+        if val and val not in seen:
+            seen.add(val)
+            sizes.append(_normalize_screen_inch_hint(val))
+    return sizes
+
+
+def screen_inches_in_text(text: str) -> set[str]:
+    return {hint.replace("inch", "") for hint in _extract_screen_inch_sizes(text)}
+
+
+def is_screen_size_variant_query(text: str) -> bool:
+    return bool(_extract_screen_inch_sizes(text))
+
+
+def screen_size_conflicts_with_session(
+    query: str,
+    *,
+    last_keywords: str = "",
+    last_product_name: str = "",
+) -> bool:
+    """True khi câu hỏi tiếp đổi kích thước inch khác SP đang thảo luận."""
+    q_sizes = screen_inches_in_text(query)
+    if not q_sizes:
+        return False
+    prior = f"{last_keywords or ''} {last_product_name or ''}".strip()
+    prior_sizes = screen_inches_in_text(prior)
+    if not prior_sizes:
+        return False
+    return not (q_sizes & prior_sizes)
+
+
 def _extract_variant_hints(keywords: str) -> list[str]:
     hints: list[str] = []
     lower = (keywords or "").lower()
@@ -1794,13 +1855,23 @@ def _extract_variant_hints(keywords: str) -> list[str]:
     if best_color:
         hints.append(best_color[1])
 
+    for inch in _extract_screen_inch_sizes(lower):
+        hints.append(inch)
+
     return hints
 
 
-def _split_variant_hints(hints: list[str]) -> tuple[list[str], list[str]]:
+def _split_variant_hints(hints: list[str]) -> tuple[list[str], list[str], list[str]]:
     color = [h for h in hints if h in _COLOR_PRIMARY_HINTS]
-    storage = [h for h in hints if h not in _COLOR_PRIMARY_HINTS]
-    return color, storage
+    screen = [
+        h for h in hints
+        if h.endswith("inch") and h[:-4].isdigit()
+    ]
+    storage = [
+        h for h in hints
+        if h not in _COLOR_PRIMARY_HINTS and h not in screen
+    ]
+    return color, storage, screen
 
 
 def merge_follow_up_variant_into_keywords(
@@ -1808,8 +1879,9 @@ def merge_follow_up_variant_into_keywords(
     follow_up_text: str,
 ) -> str:
     """
-    Hỏi tiếp đổi màu/dung lượng — cập nhật từ khóa ngữ cảnh.
+    Hỏi tiếp đổi màu/dung lượng/kích thước inch — cập nhật từ khóa ngữ cảnh.
     Vd. ngữ cảnh 'iPhone 17 Pro 1TB Xanh' + 'màu bạc còn hàng không' → ... 1TB Bạc
+    Vd. 'MacBook Pro M5' + 'có bản 16inch không' → MacBook Pro 16 inch M5
     """
     base = (keywords or "").strip()
     if not base:
@@ -1817,13 +1889,13 @@ def merge_follow_up_variant_into_keywords(
     follow_hints = _extract_variant_hints(follow_up_text or "")
     if not follow_hints:
         return base
-    new_color, new_storage = _split_variant_hints(follow_hints)
-    if not new_color and not new_storage:
+    new_color, new_storage, new_screen = _split_variant_hints(follow_hints)
+    if not new_color and not new_storage and not new_screen:
         return base
 
     result = base
     base_hints = _extract_variant_hints(base)
-    base_color, base_storage = _split_variant_hints(base_hints)
+    base_color, base_storage, base_screen = _split_variant_hints(base_hints)
 
     def _color_label(primary: str) -> str:
         return " ".join(part.capitalize() for part in primary.split())
@@ -1854,6 +1926,13 @@ def merge_follow_up_variant_into_keywords(
         )
         if label.lower() not in result.lower():
             result = f"{result} {label}".strip()
+
+    if new_screen and (not base_screen or new_screen[0] != base_screen[0]):
+        result = _SCREEN_INCH_VARIANT_RE.sub(" ", result)
+        result = re.sub(r"\s+", " ", result).strip()
+        inch_val = new_screen[0].replace("inch", "")
+        if inch_val not in screen_inches_in_text(result):
+            result = f"{result} {inch_val} inch".strip()
 
     return re.sub(r"\s+", " ", result).strip()
 
@@ -2174,6 +2253,88 @@ async def get_products_by_ids(
             {"provinceId": province_id if province_id is not None else CPS_PROVINCE_ID},
         )
     return payload.get("data", {}).get("products") or []
+
+
+_RECOMMENDATION_HEADERS = {
+    "accept": "application/json",
+    "x-client-type": "web",
+}
+
+
+def _recommendation_product_id(detail: dict[str, Any]) -> str:
+    """ID gửi recommendation API — ưu tiên parent/default (giống trang chi tiết)."""
+    for key in ("parent_id", "default_product_id", "product_id"):
+        val = str(detail.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+async def fetch_recommended_products(
+    product_id: str | int,
+    *,
+    province_id: int | None = None,
+    max_products: int | None = None,
+) -> list[dict[str, Any]]:
+    """Gợi ý phụ kiện / sản phẩm mua cùng từ recommendation API."""
+    if not CPS_RECOMMENDATION_ENABLED:
+        return []
+
+    pid = str(product_id).strip()
+    if not pid:
+        return []
+
+    limit = max_products if max_products is not None else CPS_RECOMMENDATION_MAX_PRODUCTS
+    limit = max(1, min(int(limit), 10))
+
+    url = f"{CPS_API_BASE_URL}/recommendation/v1/recommend"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                url,
+                params={"product_id": pid},
+                headers=_RECOMMENDATION_HEADERS,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+    except Exception as exc:
+        logger.warning("Recommendation API lỗi product_id=%s: %s", pid, exc)
+        return []
+
+    raw_items = body.get("data") or []
+    rec_ids: list[int] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            rec_pid = int(item.get("product_id"))
+        except (TypeError, ValueError):
+            continue
+        if rec_pid not in rec_ids:
+            rec_ids.append(rec_pid)
+        if len(rec_ids) >= limit:
+            break
+
+    if not rec_ids:
+        return []
+
+    products = await get_products_by_ids(rec_ids, province_id=province_id)
+    by_id: dict[int, dict[str, Any]] = {}
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        try:
+            gid = int((item.get("general") or {}).get("product_id"))
+        except (TypeError, ValueError):
+            continue
+        by_id[gid] = item
+
+    records: list[dict[str, Any]] = []
+    for rid in rec_ids:
+        gql_item = by_id.get(rid)
+        if gql_item:
+            records.append(_graphql_product_to_search_record(gql_item))
+    return records
 
 
 async def _fetch_child_product_ids(
@@ -2849,6 +3010,7 @@ async def _fetch_product_for_query_body(
                     stats["resolve_source"] = "product_map"
                     stats["product_map_id"] = detail.get("product_id", "")
                     stats["product_map_score"] = detail.get("product_map_score", 0)
+                    stats["product_map_confidence"] = detail.get("product_map_confidence", 0)
                     _append_api_call(
                         stats,
                         name="Product map",
@@ -2919,6 +3081,7 @@ async def _fetch_product_for_query_body(
                     stats["resolve_source"] = "product_map"
                     stats["product_map_id"] = detail.get("product_id", "")
                     stats["product_map_score"] = detail.get("product_map_score", 0)
+                    stats["product_map_confidence"] = detail.get("product_map_confidence", 0)
                     _append_api_call(
                         stats,
                         name="Product map",
@@ -3575,6 +3738,20 @@ async def _enrich_payload_for_scenarios_inner(
         province_id=pid,
     )
     fetched.update(extended)
+
+    if (
+        not _is_browse_list_detail(detail)
+        and not payload.get("compare_mode")
+    ):
+        rec_pid = _recommendation_product_id(detail)
+        if rec_pid:
+            recommended = await fetch_recommended_products(
+                rec_pid,
+                province_id=pid,
+            )
+            if recommended:
+                payload["recommended_products"] = recommended
+                fetched["recommended_products"] = True
 
     if scenarios.get("warranty") and not detail.get("warranty_information"):
         if not payload.get("product_faqs"):

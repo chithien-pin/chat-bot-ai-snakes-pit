@@ -119,6 +119,13 @@ STOCK_STATUS_PROMPT_ADDON = (
     "KHÔNG nói 'còn hàng' khi is_out_of_stock hoặc is_subscription."
 )
 
+RECOMMENDED_PRODUCTS_PROMPT_ADDON = (
+    "recommended_products[] là gợi ý phụ kiện / sản phẩm mua cùng từ CellphoneS (tối đa 5). "
+    "Sau khi trả lời câu hỏi chính về primary_product, gợi ý ngắn 2–5 SP trong danh sách: "
+    "tên + giá + link url. Không bịa SP ngoài recommended_products. "
+    "Có thể gợi ý nhẹ ở cuối tin nhắn dù khách không hỏi mua kèm."
+)
+
 COLOR_VARIANTS_PROMPT_ADDON = (
     "Khách hỏi màu khác / màu còn tồn — dùng color_sibling_variants.variants[]: "
     "mỗi phần tử là một màu sibling (cùng dung lượng/model cha). "
@@ -215,7 +222,7 @@ MODEL_FALLBACKS = (
 
 # Gợi ý tên sản phẩm đầy đủ — bỏ qua bước chuẩn hóa nếu đã rõ
 _PRODUCT_HINTS = (
-    "iphone", "ipad", "macbook", "imac", "airpods", "apple watch",
+    "iphone", "ipad", "macbook", "mac mini", "mac studio", "imac", "airpods", "apple watch",
     "samsung", "galaxy", "xiaomi", "redmi", "oppo", "vivo", "realme",
     "điện thoại", "dien thoai", "smartphone",
     "laptop", "tablet", "máy tính", "may tinh", "máy tính bảng", "may tinh bang",
@@ -239,7 +246,7 @@ _QUESTION_NOISE_RE = re.compile(
     r"\b("
     r"có không|có hàng không|còn hàng không|co khong|con hang|"
     r"có voucher gì|có voucher gi|co voucher gi|"
-    r"giá bao nhiêu|giá như thế nào|gia nhu the nao|"
+    r"giá bao nhiêu|giá như thế nào|giá như nào|gia nhu the nao|gia nhu nao|"
     r"như thế nào|nhu the nao|thế nào|the nao|"
     r"bao nhiêu tiền|thêm bao nhiêu|them bao nhieu|bn tiền|có ko|có không ạ|"
     r"tư vấn|tu van|cho mình|giúp mình|xin|ạ"
@@ -427,6 +434,8 @@ Ví dụ:
 - "Trả góp Home Credit iPhone 16 128gb" → iPhone 16 128GB
 - "Gói BH VIP rơi vỡ iPhone 16 Pro Max" → iPhone 16 Pro Max
 - "Mua nồi chiên tầm 8 lít, giá 600k" → nồi chiên 8 lít
+- "Giá macbook neo vàng 512g" → MacBook Neo 512GB Vàng (KHÔNG đổi Neo thành Air/Pro)
+- QUAN TRỌNG: Giữ nguyên tên dòng model — MacBook Neo ≠ MacBook Air ≠ MacBook Pro; không suy diễn đổi dòng
 - QUAN TRỌNG: câu mới nhắc danh mục/SP khác ngữ cảnh cũ → CHỈ trích từ câu mới, BỎ QUA ngữ cảnh
 - Chỉ dùng ngữ cảnh khi câu mới là hỏi tiếp thuần (vd: "còn hàng không", "giá sao") về ĐÚNG SP đang thảo luận"""
 
@@ -525,6 +534,8 @@ def _build_analysis_prompt(
         system = f"{system}\n{COMBO_PROMPT_ADDON}"
     if product_data.get("color_sibling_variants") or scenarios.get("color_variants"):
         system = f"{system}\n{COLOR_VARIANTS_PROMPT_ADDON}"
+    if product_data.get("recommended_products"):
+        system = f"{system}\n{RECOMMENDED_PRODUCTS_PROMPT_ADDON}"
     system = f"{system}\n{PRODUCT_DATA_PROMPT_ADDON}"
     try:
         from cps_bot.feedback.feedback_training import build_training_prompt_addon
@@ -750,8 +761,49 @@ def should_llm_normalize_keywords(
     return False
 
 
+def _llm_keywords_preserve_model_identity(original: str, keywords: str) -> bool:
+    """
+    LLM không được đổi dòng/model/danh mục (MacBook Neo → Air, iPhone → Galaxy…).
+    """
+    from cps_bot.browse.product_lines import (
+        product_context_conflict,
+        required_model_phrases,
+    )
+    from cps_bot.browse.product_map import _fold, _tokenize
+
+    if product_context_conflict(original, keywords):
+        return False
+
+    orig_f = _fold(original)
+    kw_f = _fold(keywords)
+    if not orig_f or not kw_f:
+        return True
+
+    for phrase in required_model_phrases(original):
+        if phrase not in kw_f:
+            return False
+
+    distinct = frozenset({"neo", "plus", "ultra", "se", "fold", "flip", "fe", "note"})
+    orig_tokens = _tokenize(original)
+    for token in distinct:
+        if token in orig_tokens and token not in kw_f:
+            return False
+
+    if re.search(r"\bmac\s+mini\b", orig_f, re.I) and not re.search(r"\bmac\s+mini\b", kw_f, re.I):
+        return False
+
+    return True
+
+
 def _llm_keywords_acceptable(keywords: str, original: str) -> bool:
     """Chấp nhận keyword từ LLM — kể cả khi đổi đồng nghĩa (sạc dự phòng → pin dự phòng)."""
+    if not _llm_keywords_preserve_model_identity(original, keywords):
+        logger.warning(
+            "LLM keyword bị từ chối — đổi model/dòng: %r → %r",
+            original[:80],
+            keywords[:80],
+        )
+        return False
     if _keywords_match_query(keywords, original):
         return True
     kw = (keywords or "").strip().lower()
@@ -809,8 +861,17 @@ def _tokenize_words(text: str) -> list[str]:
     return re.findall(r"\b[\wđĐ]+", text, flags=re.UNICODE)
 
 
+_IP_SHORTHAND_RE = re.compile(r"\bip\d{1,2}\b", re.IGNORECASE)
+_FOLLOW_UP_QUESTION_TAIL_RE = re.compile(
+    r"\b(?:không|khong|gì|sao|nào|nao)\b|\?",
+    re.IGNORECASE,
+)
+
+
 def _has_abbrev_tokens(text: str) -> bool:
-    """Có từ viết tắt trong từ điển (vd: nckd, ss, ip)."""
+    """Có từ viết tắt trong từ điển (vd: nckd, ss, ip) hoặc ip15/ip16."""
+    if _IP_SHORTHAND_RE.search(text or ""):
+        return True
     for word in _tokenize_words(text):
         if word.lower() in _LOCAL_ABBREV:
             return True
@@ -948,6 +1009,8 @@ def _keywords_match_query(keywords: str, original: str) -> bool:
             return True
     for hint in _PRODUCT_HINTS:
         if hint in orig_lower and hint in kw:
+            if not _llm_keywords_preserve_model_identity(original, keywords):
+                return False
             return True
     overlap = _keyword_tokens(kw) & _keyword_tokens(original)
     if overlap:
@@ -983,17 +1046,25 @@ def _normalize_keyword_line(text: str) -> str:
 
 def _mentions_new_product(text: str) -> bool:
     """Câu có nhắc sản phẩm / model mới (khác ngữ cảnh đang thảo luận)."""
-    if is_budget_browse_query(text):
+    from cps_bot.browse.product_lines import is_inbox_accessory_question, mentions_product_line
+
+    raw = text or ""
+    if is_inbox_accessory_question(raw):
+        return False
+    if is_budget_browse_query(raw):
         return True
-    if _has_abbrev_tokens(text):
+    if _has_abbrev_tokens(raw):
         return True
-    lower = text.lower()
-    if any(h in lower for h in _PRODUCT_HINTS):
+    if mentions_product_line(raw):
         return True
-    if re.search(r"\b(?:iphone|ipad|galaxy|macbook|redmi|oppo|vivo)\s*\d", lower):
-        return True
-    if re.search(r"\b\d{1,2}\s*(?:pro|plus|ultra|max|prm|pm)\b", lower):
-        return True
+    for candidate in (raw, _normalize_model_compounds(raw)):
+        lower = candidate.lower()
+        if any(h in lower for h in _PRODUCT_HINTS):
+            return True
+        if re.search(r"\b(?:iphone|ipad|galaxy|macbook|redmi|oppo|vivo)\s*\d", lower):
+            return True
+        if re.search(r"\b\d{1,2}\s*(?:pro|plus|ultra|max|prm|pm)\b", lower):
+            return True
     return False
 
 
@@ -1002,8 +1073,14 @@ def _is_follow_up_question(text: str) -> bool:
     Câu hỏi tiếp thuần (vd: "còn hàng không", "giá sao").
     Câu mới có viết tắt / danh mục / mô tả dài → KHÔNG coi là hỏi tiếp.
     """
+    from cps_bot.browse.product_lines import is_inbox_accessory_question
+
     t = text.strip().lower()
+    if is_inbox_accessory_question(text):
+        return True
     if _has_abbrev_tokens(text):
+        return False
+    if _mentions_new_product(text):
         return False
     if len(t) > 55 or len(t.split()) > 8:
         return False
@@ -1021,6 +1098,7 @@ def _is_follow_up_question(text: str) -> bool:
         "tặng gì", "tang gi", "có gì", "co gi", "trả góp", "tra gop",
         "bảo hành", "bao hanh", "đủ không", "du khong", "phù hợp", "phu hop",
         "nên mua", "nen mua", "giảm giá", "giam gia", "pmh", "voucher",
+        "có bản", "co ban", "bản 14", "ban 14", "bản 16", "ban 16",
     )
     if any(p in t for p in follow_patterns):
         return True
@@ -1057,7 +1135,7 @@ _BRAND_HINT_RE = re.compile(
 
 def _extract_model_generations(text: str) -> dict[str, set[str]]:
     """Trích thế hệ model theo brand — dùng so khớp ngữ cảnh."""
-    value = (text or "").lower()
+    value = _normalize_model_compounds(text or "").lower()
     gens: dict[str, set[str]] = {
         "iphone": set(_IPHONE_GEN_RE.findall(value)),
         "galaxy": set(_GALAXY_GEN_RE.findall(value)),
@@ -1081,10 +1159,15 @@ def models_conflict_with_session(
     """
     True nếu câu mới gợi ý model/generation khác session (vd. iphone 17 -> iphone 15).
   """
+    from cps_bot.browse.product_lines import product_context_conflict
+
     query = (text or "").strip()
     prior = _prior_session_text(last_keywords, last_product_name)
     if not query or not prior:
         return False
+
+    if product_context_conflict(query, prior):
+        return True
 
     new_gens = _extract_model_generations(query)
     prior_gens = _extract_model_generations(prior)
@@ -1124,6 +1207,16 @@ def identity_compatible_with_session(
         last_product_name=last_product_name,
     ):
         return False
+    from cps_bot.cps.cps_api import is_color_variant_query, screen_size_conflicts_with_session
+
+    if screen_size_conflicts_with_session(
+        query,
+        last_keywords=last_keywords,
+        last_product_name=last_product_name,
+    ):
+        return False
+    if is_color_variant_query(query):
+        return True
     if _mentions_new_product(query) and not references_prior_product(query):
         return False
     return True
@@ -1152,7 +1245,14 @@ def should_reuse_product_identity(
     ):
         return False
 
-    from cps_bot.cps.cps_api import is_color_variant_query
+    from cps_bot.cps.cps_api import is_color_variant_query, screen_size_conflicts_with_session
+
+    if screen_size_conflicts_with_session(
+        query,
+        last_keywords=last_keywords,
+        last_product_name=last_product_name,
+    ):
+        return False
 
     if is_color_variant_query(query):
         return True
@@ -1173,7 +1273,12 @@ def _try_reuse_context_keywords(
     original: str,
     conversation_context: str,
 ) -> str | None:
+    from cps_bot.browse.product_lines import context_product_text, product_context_conflict
+
     if not conversation_context or not _context_has_product(conversation_context):
+        return None
+    ctx_product = context_product_text(conversation_context)
+    if product_context_conflict(original, ctx_product):
         return None
     if references_prior_product(original):
         return _reuse_keywords_from_context(original, conversation_context)
@@ -1191,14 +1296,21 @@ def is_contextual_follow_up(
     """
     Câu hỏi tiếp trong cùng chủ đề SP (kể cả hỏi quà tặng/KM mà không nhắc tên SP).
     """
+    from cps_bot.browse.product_lines import context_product_text, product_context_conflict
+
     if is_budget_browse_query(text):
         return False
     if not _context_has_product(conversation_context):
+        return False
+    ctx_product = context_product_text(conversation_context)
+    if product_context_conflict(text, ctx_product):
         return False
     from cps_bot.cps.cps_api import is_color_variant_query
 
     if is_color_variant_query(text):
         return True
+    if _mentions_new_product(text):
+        return False
     if references_prior_product(text):
         return True
     if _is_follow_up_question(text):
@@ -1207,13 +1319,10 @@ def is_contextual_follow_up(
     t = text.strip().lower()
     if _has_abbrev_tokens(text):
         return False
-    if _mentions_new_product(text):
-        return False
     if len(t) > 80:
         return False
 
-    question_markers = ("không", "khong", "gì", "gi", "sao", "nào", "nao", "?")
-    if len(t.split()) <= 10 and any(m in t for m in question_markers):
+    if len(t.split()) <= 10 and _FOLLOW_UP_QUESTION_TAIL_RE.search(t):
         return True
     return False
 

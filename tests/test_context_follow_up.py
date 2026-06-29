@@ -89,6 +89,47 @@ def test_resolve_session_chat_level_on_new_topic() -> None:
     assert "1tb" in (topic_b.get("last_keywords") or "").lower()
 
 
+def test_screen_inch_variant_switch() -> None:
+    from cps_bot.cps.cps_api import (
+        merge_follow_up_variant_into_keywords,
+        screen_size_conflicts_with_session,
+    )
+
+    base = "MacBook Pro M5"
+    q = "có bản 16inch không?"
+    merged = merge_follow_up_variant_into_keywords(base, q)
+    assert "16" in merged, merged
+    assert "inch" in merged.lower(), merged
+    assert screen_size_conflicts_with_session(
+        q,
+        last_keywords=base,
+        last_product_name="MacBook Pro 14 M5 16GB/512GB",
+    )
+
+
+def test_extract_keywords_screen_inch_from_context() -> None:
+    from cps_bot.llm.gemini_client import (
+        extract_search_keywords,
+        identity_compatible_with_session,
+        should_reuse_product_identity,
+    )
+
+    ctx = (
+        "=== NGỮ CẢNH HỘI THOẠI (gần đây) ===\n"
+        "Sản phẩm đang thảo luận: MacBook Pro 14 M5 16GB/512GB\n"
+        "Từ khóa tìm gần nhất: MacBook Pro M5\n"
+    )
+    q = "có bản 16inch không?"
+    kw = extract_search_keywords(q, ctx, use_llm=False)
+    assert "16" in kw, kw
+    assert not should_reuse_product_identity(
+        q, ctx, last_keywords="MacBook Pro M5", last_product_name="MacBook Pro 14 M5"
+    )
+    assert not identity_compatible_with_session(
+        q, last_keywords="MacBook Pro M5", last_product_name="MacBook Pro 14 M5"
+    )
+
+
 if __name__ == "__main__":
     test_follow_up_mau_sac_gia_ban()
     test_new_product_not_follow_up()

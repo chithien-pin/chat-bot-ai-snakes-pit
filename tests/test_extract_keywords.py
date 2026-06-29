@@ -1,5 +1,12 @@
 """Test bóc từ khóa search — giá / model viết dính."""
-from cps_bot.llm.gemini_client import extract_search_keywords, _normalize_keyword_line
+from unittest.mock import patch
+
+from cps_bot.llm.gemini_client import (
+    _llm_keywords_acceptable,
+    _llm_keywords_preserve_model_identity,
+    _normalize_keyword_line,
+    extract_search_keywords,
+)
 
 
 def test_iphone_promax_price_question():
@@ -37,6 +44,23 @@ def test_ip16_shorthand_expands():
     assert _normalize_keyword_line("ip16 xanh lưu ly") == "iphone 16 xanh lưu ly"
     kw = extract_search_keywords("ip16 xanh lưu ly giá bao nhiêu?", use_llm=False)
     assert kw == "iphone 16 xanh lưu ly"
+
+
+def test_llm_rejects_macbook_neo_to_air_swap():
+    original = "Giá macbook neo vangf 512g"
+    bad_llm = "Macbook Air 512GB Vàng"
+    assert not _llm_keywords_preserve_model_identity(original, bad_llm)
+    assert not _llm_keywords_acceptable(bad_llm, original)
+
+
+def test_macbook_neo_falls_back_when_llm_swaps_to_air():
+    with patch(
+        "cps_bot.llm.gemini_client._generate_with_fallback",
+        return_value="Macbook Air 512GB Vàng",
+    ):
+        kw = extract_search_keywords("Giá macbook neo vangf 512g", use_llm=True)
+    assert "neo" in kw.lower()
+    assert "macbook" in kw.lower()
 
 
 if __name__ == "__main__":

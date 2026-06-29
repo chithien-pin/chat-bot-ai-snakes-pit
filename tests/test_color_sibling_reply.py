@@ -147,6 +147,51 @@ class ColorSiblingE2ETest(unittest.TestCase):
         for color in ("Bạc", "Cam Vũ Trụ", "Xanh Đậm"):
             self.assertIn(color, answer, answer)
 
+    def test_ip16_then_ip15_topic_switch(self) -> None:
+        async def _run() -> tuple[str, str, str]:
+            q1 = "ip16 xanh mòng két giá bao nhiêu"
+            q2 = "ip15 plus màu xanh giá bao nhiêu"
+            kw1 = extract_search_keywords(q1, use_llm=False)
+            _, d1, _ = await fetch_product_for_query(kw1, user_message=q1)
+            ip16_pid = str(d1.get("product_id") or "")
+            self.assertTrue(ip16_pid)
+            self.assertIn("16", d1.get("name") or "")
+
+            store: dict = {}
+            session = get_session(store, "chat", "user")
+            append_turn(
+                session,
+                user=q1,
+                assistant="giá",
+                keywords=kw1,
+                product_name=d1.get("name") or "",
+                product_url=d1.get("url") or "",
+                product_id=d1.get("product_id") or "",
+                parent_product_id=d1.get("parent_id") or "",
+            )
+            lp = session["last_product"]
+            ctx = format_context_block(session)
+            kw2 = extract_search_keywords(q2, ctx, use_llm=False)
+            self.assertNotIn("iphone 16", kw2.lower())
+            self.assertIn("iphone 15", kw2.lower())
+
+            _, d2, stats = await fetch_product_for_query(
+                kw2,
+                user_message=q2,
+                fallback_url=lp.get("url") or "",
+                fallback_product_id=lp.get("product_id") or "",
+                session_fallback_parent_id=lp.get("parent_id") or "",
+                session_last_keywords=session["last_keywords"],
+                session_last_product_name=lp.get("name") or "",
+            )
+            self.assertNotEqual(str(d2.get("product_id")), ip16_pid)
+            self.assertNotEqual(stats.get("resolve_source"), "session_fallback_product_id")
+            return kw2, str(d2.get("product_id") or ""), str(d2.get("name") or "")
+
+        kw2, pid, name = asyncio.run(_run())
+        self.assertIn("15", name)
+        self.assertIn("plus", name.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
