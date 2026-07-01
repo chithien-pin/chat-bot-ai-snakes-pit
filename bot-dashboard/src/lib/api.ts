@@ -117,3 +117,76 @@ export function rejectFeedbackTraining(entryId: string, adminNote = "") {
     { admin_note: adminNote },
   );
 }
+
+export type ChatMessageResponse = {
+  reply: string;
+  message_id: string;
+  status: string;
+  product_url: string;
+  product_name: string;
+  product_id: string;
+  search_keywords: string;
+  response_link_url: string;
+};
+
+export function sendChatMessage(
+  message: string,
+  sessionId: string,
+  userId: string,
+  userName = "",
+) {
+  return postJsonPublic<ChatMessageResponse>("/api/chat", {
+    message,
+    session_id: sessionId,
+    user_id: userId,
+    user_name: userName,
+  });
+}
+
+export function clearChatSession(sessionId: string, userId: string) {
+  return postJsonPublic<{ ok: boolean }>("/api/chat/clear", {
+    session_id: sessionId,
+    user_id: userId,
+  });
+}
+
+export function sendChatFeedback(
+  sessionId: string,
+  userId: string,
+  messageId: string,
+  rating: "helpful" | "not_helpful",
+  comment = "",
+) {
+  return postJsonPublic<{ ok: boolean }>("/api/chat/feedback", {
+    session_id: sessionId,
+    user_id: userId,
+    message_id: messageId,
+    rating,
+    comment,
+  });
+}
+
+async function postJsonPublic<T>(path: string, body: unknown): Promise<T> {
+  const API = process.env.NEXT_PUBLIC_API_URL?.trim() || "";
+  const res = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const text = await res.text();
+  let data: unknown = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { detail: text };
+  }
+  if (!res.ok) {
+    const detail =
+      typeof data === "object" && data && "detail" in data
+        ? String((data as { detail: unknown }).detail)
+        : `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return data as T;
+}

@@ -4,6 +4,15 @@ import { sessionTokenForPassword } from "@/lib/auth-server";
 
 const PUBLIC = new Set(["/login"]);
 
+function isPublicPath(pathname: string): boolean {
+  return (
+    PUBLIC.has(pathname)
+    || pathname.startsWith("/chat")
+    || pathname.startsWith("/api/chat")
+    || pathname.startsWith("/ai-chat-landing")
+  );
+}
+
 export async function middleware(request: NextRequest) {
   const password = process.env.DASHBOARD_PASSWORD?.trim();
   if (!password) {
@@ -12,7 +21,7 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   if (
-    PUBLIC.has(pathname)
+    isPublicPath(pathname)
     || pathname.startsWith("/_next")
     || pathname.startsWith("/api/auth/")
   ) {

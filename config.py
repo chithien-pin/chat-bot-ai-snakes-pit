@@ -157,6 +157,12 @@ LLM_KEYWORD_NORMALIZE = os.getenv("LLM_KEYWORD_NORMALIZE", "1").strip().lower() 
     "yes",
     "on",
 }
+LLM_QUERY_ROUTER = os.getenv("LLM_QUERY_ROUTER", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # Feedback training — admin duyệt feedback → few-shot LLM
 FEEDBACK_TRAINING_PATH = os.getenv(
@@ -182,6 +188,9 @@ SESSION_DB_PATH = os.getenv(
     "SESSION_DB_PATH",
     str(Path(__file__).resolve().parent / "sessions.db"),
 ).strip()
+# Thời gian giữ ngữ cảnh hội thoại (giờ) — mặc định 24h/session
+SESSION_TTL_HOURS = float(os.getenv("SESSION_TTL_HOURS", "24"))
+SESSION_TTL_SECONDS = max(int(SESSION_TTL_HOURS * 3600), 60)
 USER_NAMES_CACHE_PATH = os.getenv(
     "USER_NAMES_CACHE_PATH",
     str(Path(__file__).resolve().parent / "var" / "user_names.json"),

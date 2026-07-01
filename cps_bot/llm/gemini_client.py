@@ -70,14 +70,46 @@ TRADE_IN_PROMPT_ADDON = (
 )
 
 INSTALLMENT_PROMPT_ADDON = (
-    "Trả góp — dùng object installment (API payment-installment):\n"
-    "- finance_companies.best_zero_percent_packages: gói CTTC lãi 0%/tháng (Home Credit, MCredit…).\n"
-    "- finance_companies.calculated_packages: prepaid_amount, monthly_payment, term_months chính xác.\n"
-    "- lowest_zero_prepaid: trả trước thấp nhất trong gói 0% — ưu tiên khi khách hỏi 'trả trước thấp nhất'.\n"
-    "- credit_card.zero_fee_by_bank: trả góp thẻ (VIB, TCB…) qua alepay/onepay.\n"
-    "- pay_later.details.kredivo.terms: Kredivo/Fundiin/Momo.\n"
-    "Khách hỏi Home Credit / thẻ VIB / Kredivo → chỉ trả lời nhánh tương ứng. "
-    "installment.available=false → nêu reason. Không bịa số tiền."
+    "Trả góp — 3 nhánh chính (khớp modal trả góp CellphoneS):\n"
+    "0. installment_info (GET /payment-installment/info): finance_companies_catalog + "
+    "payment_methods_catalog — dùng khi hỏi chung các hình thức/CTTC hỗ trợ.\n"
+    "1. CTTC (installment.finance_companies): best_zero_percent_packages = gói 0%/tháng; "
+    "calculated_packages = prepaid_amount + monthly_payment + term_months chính xác; "
+    "lowest_zero_prepaid = trả trước thấp nhất trong gói 0%.\n"
+    "2. Thẻ tín dụng (installment.credit_card): zero_fee_by_bank từ "
+    "online-calculate/onepay — mỗi bank có short_name/full_name (từ onepay list_bank), "
+    "cards[] (card_name, card_type, zero_fee_periods + all_periods; requested_term_periods "
+    "có thể có phí chuyển đổi fee_amount > 0 với kỳ 9/12/15 tháng). "
+    "requested_term_periods = kỳ khách hỏi. Ưu tiên OnePay.\n"
+    "3. Mua trước trả sau (installment.pay_later): pay_later.details.kredivo/fundiin/momo_vts "
+    "= kỳ hạn + lãi suất + tiền/tháng.\n"
+    "Quy tắc trả lời:\n"
+    "- Hỏi chung 'trả góp được không' / 'có những hình thức nào' → installment_info + "
+    "finance_companies + lowest_zero_prepaid.\n"
+    "- Hỏi CTTC cụ thể (Home Credit, MCredit…) → calculated_packages lọc đúng company_key.\n"
+    "- 'trả trước ít nhất' / 'trả trước thấp nhất' → lowest_zero_prepaid.\n"
+    "- '0%' / 'miễn lãi' → chỉ gói is_zero_percent=true trong best_zero_percent_packages.\n"
+    "- Hỏi thẻ/ngân hàng/OnePay/chuyển đổi trả góp → credit_card.zero_fee_by_bank (onepay).\n"
+    "- Kredivo/Fundiin/Momo/mua trước trả sau → pay_later.details.\n"
+    "- installment.needs_clarification=true → KHÔNG trả số tiền/gói trả góp chi tiết; "
+    "hỏi lại đúng missing_fields, dùng clarification_message (vd thiếu ngân hàng/kỳ hạn/loại thẻ).\n"
+    "- installment.available=false → nêu reason, không bịa số tiền hay kỳ hạn.\n"
+    "- installment.note: giá chưa gồm chiết khấu Smember nếu khách chưa đăng nhập."
+)
+
+INSTALLMENT_SCENARIO_HINTS = (
+    "Câu hỏi trả góp — nhận dạng và trả lời theo scenario:\n"
+    "- A0 (hình thức trả góp): 'có những hình thức trả góp nào' → installment_info.payment_methods_catalog "
+    "+ finance_companies_catalog.\n"
+    "- A1 (hỏi chung SP): 'trả góp được không', 'có gói trả góp' → finance_companies.companies + "
+    "lowest_zero_prepaid.\n"
+    "- A2 (CTTC cụ thể): '[Home Credit/MCredit] mấy tháng' → calculated_packages[company_key].\n"
+    "- A3 (trả trước thấp nhất): 'trả trước bao nhiêu', 'trả trước ít nhất' → lowest_zero_prepaid.\n"
+    "- A4 (gói 0%): 'miễn lãi', '0%' → best_zero_percent_packages (is_zero_percent=true).\n"
+    "- B1 (thẻ chung): 'trả góp thẻ tín dụng' — thiếu ngân hàng/kỳ/loại thẻ → needs_clarification, hỏi lại.\n"
+    "- B2 (ngân hàng cụ thể): đủ bank + term_months + card_type → zero_fee_by_bank; thiếu → hỏi thêm.\n"
+    "- C1 (mua trước trả sau): 'Kredivo/Fundiin/Momo' → pay_later.details.\n"
+    "- D1 (không hỗ trợ): available=false → nêu reason, gợi ý thanh toán khác."
 )
 
 WARRANTY_PROMPT_ADDON = (
@@ -124,6 +156,14 @@ RECOMMENDED_PRODUCTS_PROMPT_ADDON = (
     "Sau khi trả lời câu hỏi chính về primary_product, gợi ý ngắn 2–5 SP trong danh sách: "
     "tên + giá + link url. Không bịa SP ngoài recommended_products. "
     "Có thể gợi ý nhẹ ở cuối tin nhắn dù khách không hỏi mua kèm."
+)
+
+SIMILAR_PRODUCTS_PROMPT_ADDON = (
+    "similar_products[] là sản phẩm tương tự từ block 'Có thể bạn cũng thích' trên PDP CellphoneS. "
+    "Khi primary_product có stock_available_id=43 hoặc 56, KHÔNG tư vấn thêm khuyến mãi, "
+    "giá theo hạng thành viên, thu cũ, tồn kho chi tiết, hay phụ kiện mua cùng. "
+    "Chỉ nói ngắn gọn máy đang hết hàng/đăng ký nhận tin rồi gợi ý 2–5 sản phẩm trong similar_products "
+    "(tên + giá + link url)."
 )
 
 COLOR_VARIANTS_PROMPT_ADDON = (
@@ -234,6 +274,7 @@ _PRODUCT_HINTS = (
     "smartwatch", "đồng hồ", "dong ho", "tivi", "camera", "máy ảnh", "may anh",
     "pin dự phòng", "pin du phong", "sạc dự phòng", "sac du phong", "power bank",
     "anker", "baseus", "ugreen",
+    "quạt", "quat",
 )
 
 _VIET_TONE_RE = re.compile(
@@ -481,11 +522,21 @@ def _build_analysis_prompt(
     product_data: dict[str, Any],
     conversation_context: str = "",
 ) -> str:
+    def _primary_is_unavailable(primary: dict[str, Any]) -> bool:
+        try:
+            if int(primary.get("stock_available_id") or 0) in (43, 56):
+                return True
+        except (TypeError, ValueError):
+            pass
+        status = str(primary.get("stock_status") or "").lower()
+        return "hết hàng" in status or "đăng ký nhận tin" in status
+
     context_section = f"{conversation_context}\n\n" if conversation_context else ""
     shop_stock = product_data.get("shop_stock")
     online_stock = product_data.get("online_stock")
     primary = product_data.get("primary_product") or {}
     scenarios = product_data.get("question_scenarios") or {}
+    unavailable_primary = _primary_is_unavailable(primary)
     system = SYSTEM_PROMPT
     if shop_stock or online_stock or primary.get("stock_status"):
         system = f"{system}\n{SHOP_STOCK_PROMPT_ADDON}"
@@ -504,17 +555,20 @@ def _build_analysis_prompt(
     if primary.get("category_filter_list_mode") or scenarios.get("category_filter_browse"):
         system = f"{system}\n{CATEGORY_FILTER_BROWSE_PROMPT_ADDON}"
     if (
+        not unavailable_primary
+        and (
         primary.get("member_prices")
         or primary.get("promotions")
         or primary.get("promotion_info")
         or primary.get("stock_status")
         or scenarios.get("price_promotion")
+        )
     ):
         system = f"{system}\n{MEMBER_PRICE_PROMPT_ADDON}\n{MEMBER_TIER_HINTS}"
-    if product_data.get("trade_promo") or scenarios.get("trade_in"):
+    if not unavailable_primary and (product_data.get("trade_promo") or scenarios.get("trade_in")):
         system = f"{system}\n{TRADE_IN_PROMPT_ADDON}"
     if scenarios.get("installment") or product_data.get("installment"):
-        system = f"{system}\n{INSTALLMENT_PROMPT_ADDON}"
+        system = f"{system}\n{INSTALLMENT_PROMPT_ADDON}\n{INSTALLMENT_SCENARIO_HINTS}"
     if (
         scenarios.get("warranty")
         or primary.get("warranty_information")
@@ -535,16 +589,20 @@ def _build_analysis_prompt(
         system = f"{system}\n{FAQ_PROMPT_ADDON}"
     if product_data.get("flash_sale") or scenarios.get("flash_sale"):
         system = f"{system}\n{FLASH_SALE_PROMPT_ADDON}"
-    if product_data.get("trade_exchange_products") or scenarios.get("trade_in_device"):
+    if not unavailable_primary and (
+        product_data.get("trade_exchange_products") or scenarios.get("trade_in_device")
+    ):
         system = f"{system}\n{TRADE_DEVICE_PROMPT_ADDON}"
     if product_data.get("store_locator") or scenarios.get("store_locator"):
         system = f"{system}\n{STORE_LOCATOR_PROMPT_ADDON}"
-    if product_data.get("product_combos") or scenarios.get("combo"):
+    if not unavailable_primary and (product_data.get("product_combos") or scenarios.get("combo")):
         system = f"{system}\n{COMBO_PROMPT_ADDON}"
     if product_data.get("color_sibling_variants") or scenarios.get("color_variants"):
         system = f"{system}\n{COLOR_VARIANTS_PROMPT_ADDON}"
     if product_data.get("recommended_products"):
         system = f"{system}\n{RECOMMENDED_PRODUCTS_PROMPT_ADDON}"
+    if product_data.get("similar_products"):
+        system = f"{system}\n{SIMILAR_PRODUCTS_PROMPT_ADDON}"
     system = f"{system}\n{PRODUCT_DATA_PROMPT_ADDON}"
     try:
         from cps_bot.feedback.feedback_training import build_training_prompt_addon
@@ -1080,6 +1138,26 @@ def _mentions_new_product(text: str) -> bool:
     return False
 
 
+def is_installment_only_follow_up(text: str) -> bool:
+    """
+    Câu chỉ hỏi trả góp/thanh toán, không nhắc tên SP — giữ ngữ cảnh SP session.
+    Vd: sau Xiaomi 17T → "hsbc 12 tháng VISA".
+    """
+    from cps_bot.cps.cps_installment import is_installment_query
+
+    t = (text or "").strip()
+    if not t or not is_installment_query(t):
+        return False
+    if _mentions_new_product(text):
+        return False
+    lower = t.lower()
+    if any(h in lower for h in _PRODUCT_HINTS):
+        return False
+    if re.search(r"\b(?:iphone|ipad|galaxy|macbook|redmi|oppo|vivo|xiaomi)\s*\d", lower):
+        return False
+    return True
+
+
 def _is_follow_up_question(text: str) -> bool:
     """
     Câu hỏi tiếp thuần (vd: "còn hàng không", "giá sao").
@@ -1091,6 +1169,8 @@ def _is_follow_up_question(text: str) -> bool:
     if is_inbox_accessory_question(text):
         return True
     if is_affirmative_follow_up(text):
+        return True
+    if is_installment_only_follow_up(text):
         return True
     if _has_abbrev_tokens(text):
         return False
@@ -1254,6 +1334,12 @@ def identity_compatible_with_session(
     query = (text or "").strip()
     if not query:
         return False
+    prior = _prior_session_text(last_keywords, last_product_name)
+    if prior:
+        from cps_bot.browse.product_lines import product_context_conflict
+
+        if product_context_conflict(query, prior):
+            return False
     if models_conflict_with_session(
         query,
         last_keywords=last_keywords,
@@ -1300,6 +1386,11 @@ def should_reuse_product_identity(
     ):
         return False
 
+    from cps_bot.browse.product_lines import product_context_conflict
+
+    if prior and product_context_conflict(query, prior):
+        return False
+
     from cps_bot.cps.cps_api import is_color_variant_query, screen_size_conflicts_with_session
 
     if screen_size_conflicts_with_session(
@@ -1316,6 +1407,9 @@ def should_reuse_product_identity(
         return True
 
     if is_affirmative_follow_up(query):
+        return True
+
+    if is_installment_only_follow_up(query):
         return True
 
     if _mentions_new_product(query):
@@ -1370,6 +1464,8 @@ def is_contextual_follow_up(
     if is_color_variant_query(text):
         return True
     if is_affirmative_follow_up(text):
+        return True
+    if is_installment_only_follow_up(text):
         return True
     if _mentions_new_product(text):
         return False

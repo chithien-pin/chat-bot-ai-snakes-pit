@@ -78,6 +78,127 @@ class ProductMapEntry:
 
 
 @dataclass(frozen=True)
+class ProductMapIndex:
+    entries: tuple[ProductMapEntry, ...]
+    token_to_indices: dict[str, tuple[int, ...]]
+
+
+def _build_token_index(entries: tuple[ProductMapEntry, ...]) -> dict[str, tuple[int, ...]]:
+    """Inverted index — chỉ score SP có ít nhất 1 token chung với query."""
+    buckets: dict[str, list[int]] = {}
+    for idx, entry in enumerate(entries):
+        for token in entry.tokens:
+            if len(token) < 2:
+                continue
+            buckets.setdefault(token, []).append(idx)
+    return {token: tuple(indices) for token, indices in buckets.items()}
+
+
+_INDEX_BRAND_TOKENS = frozenset({
+    "iphone", "ipad", "macbook", "imac", "airpods", "samsung", "galaxy",
+    "xiaomi", "redmi", "poco", "oppo", "vivo", "realme", "nokia", "honor",
+    "asus", "dell", "lenovo", "hp", "acer", "msi", "anker", "baseus", "ugreen",
+    "quat", "laptop", "tablet", "dji", "osmo",
+})
+
+
+def _candidate_indices(
+    entries: tuple[ProductMapEntry, ...],
+    token_index: dict[str, tuple[int, ...]],
+    query_tokens: set[str],
+    query_folded: str,
+) -> set[int]:
+    """Lọc ứng viên trước khi chấm điểm — tránh quét toàn bộ map."""
+    if not entries:
+        return set()
+    if not query_tokens and len(query_folded) < 4:
+        return set()
+
+    usable = [t for t in query_tokens if len(t) >= 2 and token_index.get(t)]
+    if not usable:
+        return set(range(len(entries))) if len(query_folded) >= 6 else set()
+
+    brand_tokens = [t for t in usable if t in _INDEX_BRAND_TOKENS]
+    if brand_tokens:
+        start_token = min(brand_tokens, key=lambda t: len(token_index.get(t, ())))
+    else:
+        start_token = min(usable, key=lambda t: len(token_index.get(t, ())))
+
+    ranked_tokens = sorted(
+        usable,
+        key=lambda t: (
+            0 if t == start_token else 1,
+            2 if t in _COLOR_TOKENS else 0,
+            len(token_index.get(t, ())),
+        ),
+    )
+
+    candidates = set(token_index.get(ranked_tokens[0], ()))
+    for token in ranked_tokens[1:]:
+        if len(candidates) <= 400:
+            break
+        narrowed = candidates & set(token_index.get(token, ()))
+        if len(narrowed) >= 2:
+            candidates = narrowed
+        elif not narrowed and len(candidates) > 2000:
+            alt = set(token_index.get(token, ()))
+            if alt:
+                candidates = alt
+
+    if candidates:
+        return candidates
+
+    if len(query_folded) >= 6:
+        return {
+            idx
+            for idx, entry in enumerate(entries)
+            if query_folded in entry.text_folded
+        }
+    return set(range(len(entries)))
+
+
+def _query_phrases(query_folded: str, query_tokens: set[str]) -> list[str]:
+    """Cụm từ liên tiếp trong query — bonus khi khớp nguyên cụm trong tên SP."""
+    words = [w for w in query_folded.split() if len(w) >= 2]
+    phrases: list[str] = []
+    for size in (3, 2):
+        for i in range(len(words) - size + 1):
+            phrase = " ".join(words[i : i + size])
+            if len(phrase) >= 5:
+                phrases.append(phrase)
+    # Token pair khi từ đơn bị stop-word bỏ (vd. cổ → co)
+    ordered = [w for w in words if w in query_tokens or len(w) >= 3]
+    for i in range(len(ordered) - 1):
+        phrase = f"{ordered[i]} {ordered[i + 1]}"
+        if phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def _phrase_match_bonus(query_folded: str, entry_folded: str, query_tokens: set[str]) -> int:
+    """Thưởng khớp cụm (đeo cổ, pro max, pin trâu...) — chính xác hơn token rời."""
+    bonus = 0
+    for phrase in _query_phrases(query_folded, query_tokens):
+        if phrase in entry_folded:
+            bonus += 18 if len(phrase.split()) >= 3 else 14
+
+    # Cụm nhu cầu phụ kiện — ưu tiên đúng loại SP
+    if "deo co" in query_folded:
+        if "deo co" in entry_folded:
+            bonus += 22
+        elif "day" in entry_folded.split() or " co day" in entry_folded:
+            bonus -= 28
+    if "pin trau" in query_folded and "pin trau" in entry_folded:
+        bonus += 20
+    if "chup anh" in query_folded and any(
+        p in entry_folded for p in ("chup anh", "camera", "camera sau")
+    ):
+        bonus += 16
+
+    return bonus
+
+
+@dataclass(frozen=True)
 class ProductMapHit:
     product_id: str
     name: str
@@ -283,6 +404,12 @@ def compute_map_match_confidence(keywords: str, entry_name: str) -> float:
         if "apple watch" in entry_folded or re.search(r"\bwatch\s+ultra\b", entry_folded):
             return 0.0
 
+    pocket_gen = re.search(r"\bpocket\s*(\d+)\b", query_folded)
+    if pocket_gen:
+        gen = pocket_gen.group(1)
+        if gen not in entry_folded:
+            return 0.0
+
     query_storage = _storage_tokens(keywords)
     weighted_hits = 0.0
     weighted_total = 0.0
@@ -318,15 +445,21 @@ def compute_map_match_confidence(keywords: str, entry_name: str) -> float:
         elif variant_only and matched_core == len(non_variant):
             ratio = min(1.0, ratio + 0.08)
 
+    phrase_hits = _query_phrases(query_folded, query_tokens)
+    if phrase_hits:
+        matched_phrases = sum(1 for p in phrase_hits if p in entry_folded)
+        if matched_phrases:
+            ratio = min(1.0, ratio + 0.06 * matched_phrases)
+
     return round(min(1.0, max(0.0, ratio)), 3)
 
 
 @lru_cache(maxsize=1)
-def _load_entries(path: str) -> tuple[ProductMapEntry, ...]:
+def _load_map_index(path: str) -> ProductMapIndex:
     file_path = Path(path)
     if not file_path.is_file():
         logger.warning("Product map không tồn tại: %s", file_path)
-        return ()
+        return ProductMapIndex(entries=(), token_to_indices={})
 
     entries: list[ProductMapEntry] = []
     with file_path.open(encoding="utf-8", errors="replace") as handle:
@@ -346,8 +479,15 @@ def _load_entries(path: str) -> tuple[ProductMapEntry, ...]:
                     text_folded=_fold(name),
                 )
             )
-    logger.info("Đã load product map: %d SP từ %s", len(entries), file_path)
-    return tuple(entries)
+    entry_tuple = tuple(entries)
+    token_index = _build_token_index(entry_tuple)
+    logger.info("Đã load product map: %d SP từ %s", len(entry_tuple), file_path)
+    return ProductMapIndex(entries=entry_tuple, token_to_indices=token_index)
+
+
+@lru_cache(maxsize=1)
+def _load_entries(path: str) -> tuple[ProductMapEntry, ...]:
+    return _load_map_index(path).entries
 
 
 def _storage_tokens(text: str) -> set[str]:
@@ -459,6 +599,19 @@ def _score_entry(
             if entry_gen and entry_gen.group(1) != gen:
                 points -= 70
 
+    pocket_gen = re.search(r"\bpocket\s*(\d+)\b", query_folded)
+    if pocket_gen:
+        gen = pocket_gen.group(1)
+        if re.search(rf"\bpocket\s*{gen}\b", folded_name):
+            points += 45
+        elif re.search(r"\bpocket\b", folded_name) and gen not in folded_name:
+            points -= 80
+        if "dji" in query_tokens or "osmo" in query_tokens:
+            if "dji" in folded_name or "osmo" in folded_name:
+                points += 35
+            elif "huawei" in folded_name:
+                points -= 60
+
     if "pro max" in query_folded:
         if "pro max" not in folded_name:
             points -= 18
@@ -522,6 +675,14 @@ def _score_entry(
         if any(h in folded_name for h in ("op lung", "ốp lưng", "bao da")):
             points -= 70
 
+    points += _phrase_match_bonus(query_folded, folded_name, query_tokens)
+
+    # Phạt token đặc trưng trong tên SP mà query không nhắc (vd. dây vs đeo cổ)
+    extra_tokens = entry.tokens - query_tokens - query_storage - _COLOR_TOKENS
+    distinctive = {t for t in extra_tokens if len(t) >= 3 and t not in q_brands}
+    if distinctive and len(query_tokens) >= 2:
+        points -= min(24, len(distinctive) * 8)
+
     return points
 
 
@@ -556,6 +717,7 @@ def _pick_map_ambiguity_winner(
 
     q_brands = _brand_families(query_folded)
     required_phrases = _required_model_phrases(query_folded)
+    query_storage = _storage_tokens(query_folded)
 
     def tie_key(entry: ProductMapEntry) -> tuple[float, int, int, int]:
         folded = entry.text_folded
@@ -566,6 +728,13 @@ def _pick_map_ambiguity_winner(
         for phrase in required_phrases:
             if phrase not in folded:
                 points -= 80
+        # User nêu dung lượng → ưu tiên entry khớp đúng storage
+        if query_storage:
+            entry_storage = _storage_tokens(entry.name)
+            if entry_storage & query_storage:
+                points += 30
+            elif entry_storage:
+                points -= 40
         if "pro max" in folded and "pro max" not in query_folded:
             points -= 35
         elif _entry_has_tier_pro(folded) and "pro" not in query_tokens:
@@ -582,7 +751,8 @@ def _pick_map_ambiguity_winner(
             points -= 40
         if re.search(r"\bmini\b", folded) and "mini" not in query_folded:
             points -= 35
-        if re.fullmatch(r"iphone \d{1,2}", folded):
+        # Base model chỉ được ưu tiên khi user KHÔNG chỉ định dung lượng
+        if not query_storage and re.fullmatch(r"iphone \d{1,2}", folded):
             points += 20
         return (points, -len(entry.tokens), -len(entry.name), 0)
 
@@ -601,6 +771,7 @@ def resolve_product_from_map(keywords: str) -> ProductMapHit | None:
     if not entries:
         return None
 
+    map_index = _load_map_index(PRODUCT_MAP_PATH)
     query_tokens = _tokenize(keywords)
     query_folded = _fold(keywords)
     if not query_tokens and len(query_folded) < 4:
@@ -610,8 +781,16 @@ def resolve_product_from_map(keywords: str) -> ProductMapHit | None:
     wants_used = bool(re.search(r"\b(?:cũ|cu|hàng cũ|hang cu)\b", keywords, re.I))
     phone_query = any(h in query_folded for h in _PHONE_QUERY_HINTS)
 
+    candidate_ids = _candidate_indices(
+        map_index.entries,
+        map_index.token_to_indices,
+        query_tokens,
+        query_folded,
+    )
+
     ranked: list[tuple[int, ProductMapEntry]] = []
-    for entry in entries:
+    for idx in candidate_ids:
+        entry = map_index.entries[idx]
         score = _score_entry(
             entry,
             query_tokens,
@@ -660,3 +839,4 @@ def resolve_product_from_map(keywords: str) -> ProductMapHit | None:
 def clear_product_map_cache() -> None:
     """Xóa cache sau khi cập nhật file map."""
     _load_entries.cache_clear()
+    _load_map_index.cache_clear()

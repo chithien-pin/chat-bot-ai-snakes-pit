@@ -233,6 +233,15 @@ def should_attach_product_links_appendix(
     if is_browse_list_mode(detail):
         return True
     scenarios = scenarios or {}
+    # Scenario gợi ý browse nhưng fetch thất bại → không gắn link SP lạ
+    if scenarios.get("budget_browse") and not (detail or {}).get("budget_browse_list_mode"):
+        return False
+    if scenarios.get("category_filter_browse") and not (detail or {}).get(
+        "category_filter_list_mode"
+    ):
+        return False
+    if scenarios.get("stock_browse") and not (detail or {}).get("stock_browse_list_mode"):
+        return False
     return bool(
         scenarios.get("stock_browse")
         or scenarios.get("budget_browse")

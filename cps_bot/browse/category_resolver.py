@@ -50,6 +50,19 @@ _CANONICAL_MENU_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "Âm thanh": ("âm thanh", "am thanh", "loa", "tai nghe", "headphone"),
     "Máy ảnh": ("máy ảnh", "may anh", "camera"),
+    "Máy hút bụi cầm tay": (
+        "máy hút bụi cầm tay",
+        "may hut bui cam tay",
+        "máy hút bụi",
+        "may hut bui",
+        "hút bụi cầm tay",
+        "hut bui cam tay",
+    ),
+    "Robot hút bụi": (
+        "robot hút bụi",
+        "robot hut bui",
+        "robot vacuum",
+    ),
     "Đồng hồ": ("đồng hồ", "dong ho", "smartwatch", "smart watch"),
     "Pin dự phòng": (
         "pin",
@@ -376,7 +389,18 @@ def _menu_query_overlap(text_norm: str, menu_name: str) -> int:
     if not tokens:
         return 0
     query_parts = text_norm.split()
-    return sum(1 for t in tokens if t in query_parts or t in text_norm)
+    count = 0
+    for token in tokens:
+        if token in query_parts:
+            count += 1
+            continue
+        # Tránh substring ảo: "pho" trong "iphone", "man" trong "samsung"...
+        if len(token) <= 4:
+            if re.search(r"(?:^|\s)" + re.escape(token) + r"(?:\s|$)", text_norm):
+                count += 1
+        elif token in text_norm:
+            count += 1
+    return count
 
 
 def _page_path_depth(page_path: str) -> int:
@@ -395,6 +419,12 @@ def _child_extra_menu_tokens_in_query(
     if not extra:
         return False
     return all(t in text_norm for t in extra)
+
+
+_BRAND_CHILD_MENUS = frozenset({
+    "iPhone", "Samsung", "Xiaomi", "OPPO", "vivo", "realme", "HONOR", "Nokia",
+    "Masstel", "Itel", "TECNO", "Nubia", "MacBook", "iPad",
+})
 
 
 def refine_to_deepest_category_match(text: str, hit: CategoryMatch) -> CategoryMatch:
@@ -462,6 +492,11 @@ def refine_to_deepest_category_match(text: str, hit: CategoryMatch) -> CategoryM
         ):
             continue
         overlap = _menu_query_overlap(text_norm, menu_name)
+        child_brand = menu_name in _BRAND_CHILD_MENUS and _child_extra_menu_tokens_in_query(
+            text_norm, hit.menu_name, menu_name
+        )
+        if child_brand:
+            overlap = max(overlap, parent_overlap + 1)
         if overlap < 2 and not _child_extra_menu_tokens_in_query(
             text_norm, hit.menu_name, menu_name
         ):

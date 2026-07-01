@@ -42,6 +42,16 @@ from dashboard.metrics_reader import (
 )
 from dashboard.pipeline_trace import get_pipeline_by_id, recent_pipelines
 from dashboard.session_reader import load_session_summary
+from cps_bot.core.chat_pipeline import (
+    clear_web_chat_session,
+    process_chat_message,
+)
+from cps_bot.feedback.feedback import (
+    FEEDBACK_HELPFUL,
+    FEEDBACK_NOT_HELPFUL,
+    get_feedback_context,
+    record_message_feedback,
+)
 from cps_bot.feedback.feedback_training import (
     accept_feedback_entry,
     list_feedback_entries,
@@ -59,6 +69,26 @@ class FeedbackActionBody(BaseModel):
     admin_note: str = ""
 
 
+class ChatMessageBody(BaseModel):
+    message: str
+    session_id: str = "default"
+    user_id: str = "anonymous"
+    user_name: str = ""
+
+
+class ChatClearBody(BaseModel):
+    session_id: str = "default"
+    user_id: str = "anonymous"
+
+
+class ChatFeedbackBody(BaseModel):
+    session_id: str = "default"
+    user_id: str = "anonymous"
+    message_id: str
+    rating: str
+    comment: str = ""
+
+
 def _entry_to_dict(entry) -> dict:
     from dataclasses import asdict
 
@@ -71,7 +101,7 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if path.startswith("/static"):
+        if path.startswith("/static") or path.startswith("/api/chat"):
             return await call_next(request)
 
         auth_header = request.headers.get("authorization")
@@ -96,7 +126,7 @@ app.add_middleware(
         "http://localhost:3001",
         "http://127.0.0.1:3001",
     ],
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.ngrok\.io|http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,6 +138,68 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.post("/api/chat")
+async def api_chat(body: ChatMessageBody) -> dict:
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    result = await process_chat_message(
+        message,
+        session_id=(body.session_id or "default").strip() or "default",
+        user_id=(body.user_id or "anonymous").strip() or "anonymous",
+        user_name=(body.user_name or "").strip(),
+    )
+    return {
+        "reply": result.reply,
+        "message_id": result.message_id,
+        "status": result.status,
+        "product_url": result.product_url,
+        "product_name": result.product_name,
+        "product_id": result.product_id,
+        "search_keywords": result.search_keywords,
+        "response_link_url": result.response_link_url,
+    }
+
+
+@app.post("/api/chat/clear")
+async def api_chat_clear(body: ChatClearBody) -> dict:
+    clear_web_chat_session(
+        (body.session_id or "default").strip() or "default",
+        user_id=(body.user_id or "anonymous").strip() or "anonymous",
+    )
+    return {"ok": True}
+
+
+@app.post("/api/chat/feedback")
+async def api_chat_feedback(body: ChatFeedbackBody) -> dict:
+    rating = (body.rating or "").strip()
+    if rating not in (FEEDBACK_HELPFUL, FEEDBACK_NOT_HELPFUL):
+        raise HTTPException(status_code=400, detail="invalid rating")
+    session_id = (body.session_id or "default").strip() or "default"
+    user_id = (body.user_id or "anonymous").strip() or "anonymous"
+    message_id = (body.message_id or "").strip()
+    if not message_id:
+        raise HTTPException(status_code=400, detail="message_id is required")
+
+    chat_id = f"web:{session_id}"
+    ctx = get_feedback_context(chat_id, message_id)
+    record_message_feedback(
+        platform="web",
+        rating=rating,
+        chat_id=chat_id,
+        user_id=user_id,
+        message_id=message_id,
+        user_comment=(body.comment or "").strip(),
+        user_question=ctx.get("user_question", ""),
+        bot_answer=ctx.get("bot_answer", ""),
+        search_keywords=ctx.get("search_keywords", ""),
+        product_id=ctx.get("product_id", ""),
+        product_name=ctx.get("product_name", ""),
+        product_url=ctx.get("product_url", ""),
+    )
+    return {"ok": True}
 
 
 @app.get("/api/config")

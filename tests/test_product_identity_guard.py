@@ -121,7 +121,15 @@ def test_fetch_skips_session_fallback_on_topic_switch() -> None:
         ) as mock_get:
             from cps_bot.cps.cps_api import _fetch_product_for_query_body
 
-            stats: dict = {}
+            stats: dict = {
+                "serpapi_calls": 0,
+                "search_products_calls": 0,
+                "cps_url_info_calls": 0,
+                "cps_product_detail_calls": 0,
+                "category_filter_calls": 0,
+                "api_calls_detail": [],
+                "resolve_source": "",
+            }
             with patch(
                 "cps_bot.cps.cps_api.search_products",
                 new_callable=AsyncMock,
@@ -134,6 +142,10 @@ def test_fetch_skips_session_fallback_on_topic_switch() -> None:
                         "product_id": "90001",
                     }
                 ],
+            ), patch(
+                "cps_bot.cps.cps_api._fetch_product_from_map",
+                new_callable=AsyncMock,
+                return_value=None,
             ), patch(
                 "cps_bot.cps.cps_api.fetch_product_from_url",
                 new_callable=AsyncMock,

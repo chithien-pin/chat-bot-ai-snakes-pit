@@ -131,6 +131,21 @@ def test_resolve_android_phone_budget_query():
     assert "price=0-10000000" in url
 
 
+def test_iphone_phone_budget_uses_apple_subcategory():
+    text = "Điện thoại iphone dưới 20 triệu"
+    req = resolve_category_filter_request(text)
+    assert req is not None
+    assert req.category_id == "132"
+    assert req.page_path == "mobile/apple.html"
+
+    from cps_bot.browse.category_filter_browse import build_category_filter_url, resolve_filter_price
+
+    url = build_category_filter_url(req, resolve_filter_price(text))
+    assert url == "mobile/apple.html?price=0-20000000"
+    assert "screen_size" not in url
+    assert "pho-thong" not in url
+
+
 def test_skip_price_menu_name_when_matching_category():
     hit = match_category_from_text("điện thoại Android dưới 10 triệu")
     assert hit is not None
@@ -262,6 +277,38 @@ def test_pin_anker_10000mah_category_filter_url():
     assert url.startswith("phu-kien/pin-du-phong/anker.html")
     assert "battery_capacity=10000-mah" in url
     assert "o-to" not in url
+
+
+def test_mobile_multi_usage_filters_combined_in_url():
+    text = (
+        "Tầm 15 triệu hãy tìm điện thoại chụp ảnh đẹp, pin trâu, "
+        "chơi game mượt, học online"
+    )
+    req = resolve_category_filter_request(text)
+    assert req is not None, "expected category filter request"
+    assert req.category_id == "3"
+    usage = next(
+        (f for f in req.matched_filters if f.get("key") == "mobile_nhu_cau_sd"),
+        None,
+    )
+    assert usage is not None, req.matched_filters
+    uris = set(usage.get("nice_uris") or [])
+    assert "choi-game" in uris
+    assert "pin-trau" in uris
+    assert "chup-anh-dep" in uris
+
+    from cps_bot.browse.category_filter_browse import build_category_filter_url, resolve_filter_price
+
+    url = build_category_filter_url(req, resolve_filter_price(text))
+    assert "mobile_nhu_cau_sd=" in url
+    for uri in ("choi-game", "pin-trau", "chup-anh-dep"):
+        assert uri in url
+    assert "price=12750000-17250000" in url
+    assert "mobile_camera_feature" not in url
+    assert "mobile_nhu_cau_sd: {in:" in req.dynamic_filter
+    assert "choi-game" in req.dynamic_filter
+    assert "pin-trau" in req.dynamic_filter
+    assert "chup-anh-dep" in req.dynamic_filter
 
 
 def test_fresh_topic_does_not_reuse_other_thread_context():

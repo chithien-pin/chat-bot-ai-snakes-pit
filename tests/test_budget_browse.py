@@ -29,6 +29,14 @@ def test_budget_query_detected() -> None:
     assert is_budget_browse_query("laptop từ 15 đến 20 triệu")
     assert is_budget_browse_query("Mua nồi chiên tầm 8 lít, giá 600k đổ lại")
     assert not is_budget_browse_query("iPhone 17 Pro Max giá bao nhiêu")
+    assert not is_budget_browse_query("máy hút bụi lực hút trên 10000Pa")
+
+
+def test_pa_suction_not_parsed_as_budget() -> None:
+    q = "máy hút bụi lực hút trên 10000Pa"
+    assert parse_budget_constraint(q) is None
+    kw = strip_budget_phrases_for_keywords(q)
+    assert "10000" in kw.lower() or "10000pa" in kw.lower().replace(" ", "")
 
 
 def test_air_fryer_600k() -> None:
@@ -53,6 +61,13 @@ def test_budget_constraint_parse() -> None:
     assert c is not None
     assert c.max_vnd == 15_000_000
     assert c.category == "điện thoại"
+
+
+def test_bare_million_budget_range() -> None:
+    c = parse_budget_constraint("Điện thoại 5 triệu")
+    assert c is not None
+    assert c.min_vnd == 4_000_000
+    assert c.max_vnd == 6_000_000
 
 
 def test_budget_filter_results() -> None:

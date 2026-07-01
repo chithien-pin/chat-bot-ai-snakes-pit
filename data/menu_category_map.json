@@ -1,8 +1,8 @@
 {
-  "updated_at": "2026-06-29T00:00:00.493584+00:00",
+  "updated_at": "2026-07-01T00:00:06.640363+00:00",
   "menu_id": 5,
   "link_count": 556,
-  "category_count": 365,
+  "category_count": 367,
   "progress_index": 556,
   "entries": {
     "Điện thoại": "3",
@@ -369,7 +369,9 @@
     "Laptop Surface cũ": "1049",
     "Apple Watch cũ": "690",
     "iPad cũ": "383",
-    "Airpods cũ": "2642"
+    "Airpods cũ": "2642",
+    "KBVision": "1278",
+    "AKASO": "2720"
   },
   "entry_paths": {
     "Điện thoại": "mobile.html",
@@ -736,7 +738,9 @@
     "Laptop Surface cũ": "hang-cu/laptop/surface.html",
     "Apple Watch cũ": "hang-cu/apple-watch.html",
     "iPad cũ": "hang-cu/ipad.html",
-    "Airpods cũ": "hang-cu/tai-nghe/apple.html"
+    "Airpods cũ": "hang-cu/tai-nghe/apple.html",
+    "KBVision": "phu-kien/camera/an-ninh/kbvision.html",
+    "AKASO": "phu-kien/camera/hanh-trinh/akaso.html"
   },
   "skipped": [
     {
@@ -1717,6 +1721,7 @@
     "phu-kien/camera/an-ninh/ezviz.html",
     "phu-kien/camera/an-ninh/hikvision.html",
     "phu-kien/camera/an-ninh/imou.html",
+    "phu-kien/camera/an-ninh/kbvision.html",
     "phu-kien/camera/an-ninh/tenda.html",
     "phu-kien/camera/an-ninh/tiandy.html",
     "phu-kien/camera/an-ninh/tp-link.html",
@@ -1725,6 +1730,7 @@
     "phu-kien/camera/gimbal.html",
     "phu-kien/camera/hanh-trinh.html",
     "phu-kien/camera/hanh-trinh/action-camera.html",
+    "phu-kien/camera/hanh-trinh/akaso.html",
     "phu-kien/camera/hanh-trinh/dji.html",
     "phu-kien/camera/hanh-trinh/gopro.html",
     "phu-kien/camera/hanh-trinh/insta360.html",

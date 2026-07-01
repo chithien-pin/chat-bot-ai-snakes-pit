@@ -1,14 +1,51 @@
 """
 Lưu ngữ cảnh hội thoại — RAM + SQLite persistence (session_store.py).
+Mỗi session có TTL (mặc định 24h, SESSION_TTL_HOURS).
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
-from .session_store import delete_persisted_session, persist_session
+from .session_store import delete_persisted_session, is_session_stale, persist_session
+
+logger = logging.getLogger(__name__)
 
 MAX_TURNS = 6
 MAX_ASSISTANT_CHARS = 400
+
+_EMPTY_SESSION: dict[str, Any] = {
+    "turns": [],
+    "last_product": None,
+    "last_keywords": "",
+    "updated_at": 0.0,
+}
+
+
+def _fresh_session() -> dict[str, Any]:
+    return {
+        "turns": [],
+        "last_product": None,
+        "last_keywords": "",
+        "updated_at": time.time(),
+    }
+
+
+def _reset_session(session: dict[str, Any]) -> None:
+    session.clear()
+    session.update(_fresh_session())
+
+
+def touch_session(session: dict[str, Any]) -> None:
+    session["updated_at"] = time.time()
+
+
+def session_is_expired(session: dict[str, Any]) -> bool:
+    """True nếu session quá SESSION_TTL — không còn ngữ cảnh SP."""
+    if not session.get("turns") and not has_product_context(session):
+        return False
+    return is_session_stale(session.get("updated_at"))
 
 
 def session_scope_key(
@@ -74,14 +111,14 @@ def resolve_session(
     Lark có thể gửi thread_id / root_id không nhất quán giữa các tin.
     """
     primary = get_session(store, chat_id, user_id, thread_key=thread_key)
-    if has_product_context(primary):
+    if has_product_context(primary) and not session_is_expired(primary):
         return primary
 
     # Topic Lark mới (key khác) — vẫn lấy mirror chat-level nếu có.
     if not (primary.get("turns") or []):
         if thread_key:
             chat_level = get_session(store, chat_id, user_id, thread_key=None)
-            if has_product_context(chat_level):
+            if has_product_context(chat_level) and not session_is_expired(chat_level):
                 return chat_level
         return primary
 
@@ -92,7 +129,7 @@ def resolve_session(
     for key, sess in store.items():
         if not key.startswith(chat_prefix) or not key.endswith(suffix):
             continue
-        if not has_product_context(sess):
+        if not has_product_context(sess) or session_is_expired(sess):
             continue
         turns = len(sess.get("turns") or [])
         if turns > best_turns:
@@ -103,7 +140,7 @@ def resolve_session(
 
     if thread_key:
         chat_level = get_session(store, chat_id, user_id, thread_key=None)
-        if has_product_context(chat_level):
+        if has_product_context(chat_level) and not session_is_expired(chat_level):
             return chat_level
 
     return primary
@@ -116,7 +153,7 @@ def mirror_session_to_chat_level(
     source: dict[str, Any],
 ) -> None:
     """Sao chép ngữ cảnh SP sang session chat-level — fallback khi topic key lệch."""
-    if not has_product_context(source):
+    if not has_product_context(source) or session_is_expired(source):
         return
     chat_sess = get_session(store, chat_id, user_id, thread_key=None)
     chat_sess["last_keywords"] = source.get("last_keywords") or ""
@@ -136,8 +173,14 @@ def get_session(
 ) -> dict[str, Any]:
     key = _session_key(chat_id, user_id, thread_key)
     if key not in store:
-        store[key] = {"turns": [], "last_product": None, "last_keywords": ""}
-    return store[key]
+        store[key] = _fresh_session()
+        return store[key]
+    session = store[key]
+    if session_is_expired(session):
+        logger.info("Session hết hạn TTL — reset %s", key)
+        _reset_session(session)
+        delete_persisted_session(key)
+    return session
 
 
 def clear_session(
@@ -172,6 +215,7 @@ def append_turn(
         }
     )
     session["turns"] = session["turns"][-MAX_TURNS:]
+    touch_session(session)
     if keywords:
         session["last_keywords"] = keywords
     if product_name:

@@ -5,6 +5,7 @@ from cps_bot.llm.gemini_client import (
     extract_search_keywords,
     is_contextual_follow_up,
     references_prior_product,
+    should_reuse_product_identity,
     _mentions_new_product,
 )
 
@@ -128,6 +129,37 @@ def test_extract_keywords_screen_inch_from_context() -> None:
     assert not identity_compatible_with_session(
         q, last_keywords="MacBook Pro M5", last_product_name="MacBook Pro 14 M5"
     )
+
+
+def test_installment_bank_follow_up_reuses_iphone_context() -> None:
+    ctx = _ctx("iphone 17", "iPhone 17 256GB | Chính hãng-Xanh Sage")
+    q = "thông tin trả góp qua thẻ tín dụng Techcombank 6 tháng"
+    assert is_contextual_follow_up(q, ctx)
+    assert should_reuse_product_identity(
+        q,
+        ctx,
+        last_keywords="iphone 17",
+        last_product_name="iPhone 17 256GB",
+    )
+    kw = extract_search_keywords(q, ctx, use_llm=False)
+    assert "iphone" in kw.lower() or "17" in kw, f"keyword phải giữ SP session: {kw!r}"
+
+
+def test_hsbc_visa_follow_up_reuses_xiaomi_context() -> None:
+    ctx = _ctx("xiaomi 17t", "Xiaomi 17T 5G 12GB 512GB - Tím")
+    q = "hsbc 12 tháng VISA"
+    from cps_bot.cps.cps_api import classify_question_scenarios
+
+    assert classify_question_scenarios(q).get("installment")
+    assert is_contextual_follow_up(q, ctx)
+    assert should_reuse_product_identity(
+        q,
+        ctx,
+        last_keywords="xiaomi 17t",
+        last_product_name="Xiaomi 17T 5G 12GB 512GB",
+    )
+    kw = extract_search_keywords(q, ctx, use_llm=False)
+    assert "xiaomi" in kw.lower() or "17t" in kw.lower(), f"keyword phải giữ SP session: {kw!r}"
 
 
 def test_affirmative_follow_up_co_tu_van_di() -> None:

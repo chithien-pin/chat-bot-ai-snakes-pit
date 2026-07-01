@@ -89,6 +89,11 @@ STOCK_STATUS_LABELS_VI: dict[int, str] = {
     STOCK_AVAILABLE_VIRTUAL_STOCK: "Còn hàng online",
 }
 
+UNAVAILABLE_STOCK_IDS: tuple[int, ...] = (
+    STOCK_AVAILABLE_OUT_OF_STOCK,
+    STOCK_AVAILABLE_SUBSCRIPTION,
+)
+
 # SP có thể mua / đặt qua web (không gồm hết hàng & đăng ký nhận tin)
 STOCK_BUYABLE_IDS = frozenset({
     STOCK_AVAILABLE_IN_STOCK,
@@ -138,11 +143,18 @@ _INSTALLMENT_QUESTION_RE = re.compile(
     r"\b("
     r"trả góp|tra gop|trả trước|tra truoc|gói trả góp|goi tra gop|"
     r"home credit|homecredit|kredivo|fundiin|mcredit|fecredit|"
-    r"home credit|homecredit|cttc|"
+    r"cttc|"
     r"kỳ hạn|ky han|"
-    r"miễn lãi|mien lai|chuyển đổi trả góp|"
+    r"miễn lãi|mien lai|chuyển đổi trả góp|chuyen doi tra gop|"
     r"thẻ tín dụng|the tin dung|techcombank|tcb|alepay|onepay|"
-    r"vib|vnpay"
+    r"vib|vnpay|hsbc|bidv|vietcombank|vcb|acb|vpbank|tpbank|msb|eximbank|vietinbank|"
+    r"visa|mastercard|jcb|amex|american express|"
+    r"mua trước trả sau|mua truoc tra sau|"
+    r"momo vts|"
+    r"hd saison|hd-saison|shinhan|lotte finance|mirae|acs|jaccs|"
+    r"lãi suất|lai suat|phí chuyển đổi|phi chuyen doi|"
+    r"trả góp 0%|tra gop 0%|0 phan tram|lãi 0|lai 0|"
+    r"thẻ visa|the visa|mastercard|thẻ mb|the mb|the vib|the tcb"
     r")\b",
     re.IGNORECASE,
 )
@@ -824,6 +836,17 @@ def parse_stock_availability(filterable: dict[str, Any]) -> dict[str, Any]:
         "is_subscription": is_subscription,
         "is_buyable_online": is_buyable_online,
     }
+
+
+def is_unavailable_product_detail(detail: dict[str, Any]) -> bool:
+    """True nếu SP ở trạng thái hết hàng/đăng ký nhận tin."""
+    stock = detail.get("stock_availability") or {}
+    if stock.get("is_out_of_stock") or stock.get("is_subscription"):
+        return True
+    try:
+        return int(detail.get("stock_available_id")) in UNAVAILABLE_STOCK_IDS
+    except (TypeError, ValueError):
+        return False
 
 
 def _format_stock_status(filterable: dict[str, Any]) -> str:
@@ -1667,6 +1690,13 @@ def _apply_generation_match_score(
     return points
 
 
+def _is_camera_gimbal_query(keywords: str) -> bool:
+    lower = (keywords or "").lower()
+    if re.search(r"\b(?:dji|osmo|gimbal|may anh|máy ảnh|camera)\b", lower):
+        return True
+    return bool(re.search(r"\bpocket\s*\d+\b", lower))
+
+
 def _pick_best_search_result(
     results: list[dict[str, Any]],
     keywords: str,
@@ -1679,6 +1709,7 @@ def _pick_best_search_result(
 
     kw_tokens = _keyword_tokens(keywords.replace("-", " "))
     kw_text = keywords.lower()
+    camera_query = _is_camera_gimbal_query(kw_text)
 
     def score(item: dict[str, Any]) -> int:
         name = str(item.get("name") or "").lower()
@@ -1707,7 +1738,12 @@ def _pick_best_search_result(
         elif "5g" not in kw_tokens and "5g" in path:
             points -= 10
 
-        if path.startswith("dien-thoai-") or path.endswith(".html"):
+        if camera_query:
+            if any(h in path for h in ("may-anh", "camera", "dji", "osmo", "gimbal")):
+                points += 30
+            if path.startswith("dien-thoai-"):
+                points -= 35
+        elif path.startswith("dien-thoai-") or path.endswith(".html"):
             points += 5
 
         points = _apply_generation_match_score(
@@ -1725,6 +1761,101 @@ def _is_product_map_query(keywords: str) -> bool:
     from cps_bot.browse.product_map import _is_map_query
 
     return _is_map_query(keywords)
+
+
+def _product_terms_for_resolution(keywords: str, user_message: str) -> str:
+    """Tách tên SP từ câu hỏi — dùng khi keywords là filter URL."""
+    kw = (keywords or "").strip()
+    if _is_product_map_query(kw):
+        return kw
+    msg = (user_message or "").strip()
+    if not msg:
+        return kw
+    from cps_bot.llm.gemini_client import _normalize_keyword_line, _strip_search_noise
+
+    terms = _normalize_keyword_line(_strip_search_noise(msg))
+    if terms and _is_product_map_query(terms):
+        return terms
+    return kw
+
+
+def _api_search_terms(keywords: str, user_message: str) -> str:
+    """Chuỗi gửi CPS search — không dùng filter URL làm query."""
+    terms = _product_terms_for_resolution(keywords, user_message)
+    if _is_product_map_query(terms):
+        return terms
+    msg = (user_message or "").strip()
+    if msg:
+        from cps_bot.llm.gemini_client import _normalize_keyword_line, _strip_search_noise
+
+        cleaned = _normalize_keyword_line(_strip_search_noise(msg))
+        if cleaned:
+            return cleaned
+    return terms
+
+
+async def _apply_session_product_fallback(
+    *,
+    fallback_pid: str,
+    fallback_url: str,
+    session_parent_pid: str,
+    session_last_product_name: str,
+    user_message: str,
+    keywords: str,
+    stats: dict[str, Any],
+) -> dict[str, Any]:
+    """Pin product_id/url session — chỉ sau khi search/map không ra kết quả."""
+    detail: dict[str, Any] = {}
+    province_id = resolve_province_from_text(user_message) or CPS_PROVINCE_ID
+    if fallback_pid:
+        try:
+            stats["cps_product_detail_calls"] += 1
+            product = await get_product_by_id(fallback_pid, province_id=province_id)
+            if product:
+                detail = normalize_product_detail(
+                    product,
+                    url=fallback_url or "",
+                    url_info={"product_id": fallback_pid},
+                )
+                if session_parent_pid and not detail.get("parent_id"):
+                    detail["parent_id"] = session_parent_pid
+                stats["resolve_source"] = "session_fallback_product_id"
+                follow_hints = _extract_variant_hints(user_message) or _extract_variant_hints(
+                    keywords
+                )
+                if follow_hints:
+                    variant_query = merge_follow_up_variant_into_keywords(
+                        keywords,
+                        user_message,
+                    )
+                    detail = await resolve_product_variant(
+                        variant_query or keywords,
+                        detail,
+                        province_id=province_id,
+                    )
+        except Exception as exc:
+            logger.warning("CPS fetch product_id=%s thất bại: %s", fallback_pid, exc)
+        return detail
+
+    if fallback_url:
+        try:
+            stats["cps_url_info_calls"] += 1
+            stats["cps_product_detail_calls"] += 1
+            detail = await fetch_product_from_url(fallback_url, keywords=keywords)
+            if detail:
+                stats["resolve_source"] = "session_fallback_url"
+                variant_query = merge_follow_up_variant_into_keywords(
+                    keywords,
+                    user_message,
+                )
+                detail = await resolve_product_variant(
+                    variant_query or keywords,
+                    detail,
+                    province_id=province_id,
+                )
+        except Exception as exc:
+            logger.warning("CPS fetch thất bại (%s): %s", fallback_url, exc)
+    return detail
 
 
 async def _fetch_product_from_map(
@@ -2296,6 +2427,47 @@ def _recommendation_product_id(detail: dict[str, Any]) -> str:
     return ""
 
 
+_SIMILAR_CATEGORY_GROUPS: tuple[tuple[set[str], str], ...] = (
+    ({"132", "927", "861", "169", "758", "201", "158", "588", "207", "495", "426", "781", "981", "1392"}, "132"),
+    ({"944", "420", "725", "279", "368", "275", "280", "369", "2185", "2184"}, "944"),
+    ({"5", "224", "212", "308", "208", "387", "23", "1119", "1120", "1530"}, "5"),
+    ({"88", "596", "597", "716", "798", "857", "885", "995", "1296", "1297", "1403", "1741", "1742"}, "88"),
+    ({"384", "1494"}, "384"),
+)
+
+
+def _box_same_product_categories(detail: dict[str, Any]) -> list[str]:
+    """
+    Map nhóm category giống `BoxSameProduct.vue`.
+    Fallback: category_id đầu tiên hiện có trên detail.
+    """
+    category_ids = {
+        str(cid).strip()
+        for cid in (detail.get("category_ids") or [])
+        if str(cid).strip()
+    }
+    primary = str(detail.get("category_id") or "").strip()
+    if primary:
+        category_ids.add(primary)
+    for group_ids, mapped in _SIMILAR_CATEGORY_GROUPS:
+        if category_ids & group_ids:
+            return [mapped]
+    if primary:
+        return [primary]
+    if category_ids:
+        return [sorted(category_ids)[0]]
+    return []
+
+
+def _similar_price_range(detail: dict[str, Any]) -> tuple[int, int] | None:
+    price_value = _price_amount(detail.get("price_value"))
+    if not price_value or price_value <= 0:
+        return None
+    low = int(price_value * 0.9)
+    high = int(price_value * 1.1)
+    return max(low, 0), max(high, low)
+
+
 async def fetch_recommended_products(
     product_id: str | int,
     *,
@@ -2361,6 +2533,93 @@ async def fetch_recommended_products(
         if gql_item:
             records.append(_graphql_product_to_search_record(gql_item))
     return records
+
+
+async def fetch_similar_products(
+    detail: dict[str, Any],
+    *,
+    province_id: int | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Sản phẩm tương tự theo logic `BoxSameProduct.vue`."""
+    categories = _box_same_product_categories(detail)
+    price_range = _similar_price_range(detail)
+    current_pid = str(detail.get("product_id") or "")
+    if not categories or not price_range:
+        return []
+
+    low_price, high_price = price_range
+    cat_literal = "[" + ", ".join(f'"{cid}"' for cid in categories) + "]"
+    query = f"""
+query SimilarProducts($provinceId: Int!) {{
+  products(
+    filter: {{
+      static: {{
+        is_parent: ["true"]
+        categories: {cat_literal}
+        province_id: $provinceId
+        filter_price: {{
+          from: {low_price}, to: {high_price}
+        }}
+      }}
+    }}
+    sort: [{{view: desc}}]
+    size: {max(1, min(int(limit), 10))}
+  ) {{
+    filterable {{
+      price
+      special_price
+      stock
+      thumbnail
+      promotion_pack
+      sticker
+      product_id
+      filter_price
+      stock_available_id
+      display_price
+      display_root_price
+      delivery_badge
+    }}
+    general {{
+      url_path
+      doc_quyen
+      url_key
+      manufacturer
+      name
+      product_id
+      review {{
+        total_count
+        average_rating
+      }}
+    }}
+  }}
+}}
+"""
+    pid_province = province_id if province_id is not None else CPS_PROVINCE_ID
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = await _graphql(
+            client,
+            CPS_GRAPHQL_V2_ENDPOINT,
+            query,
+            {"provinceId": pid_province},
+        )
+    products = payload.get("data", {}).get("products") or []
+    rows: list[dict[str, Any]] = []
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        general = item.get("general") or {}
+        filterable = item.get("filterable") or {}
+        pid = str(general.get("product_id") or "")
+        stock_qty = filterable.get("stock")
+        try:
+            stock_int = int(stock_qty) if stock_qty is not None else 0
+        except (TypeError, ValueError):
+            stock_int = 0
+        if not pid or pid == current_pid or stock_int <= 0:
+            continue
+        rows.append(_graphql_product_to_search_record(item))
+    return rows[: max(1, min(int(limit), 10))]
 
 
 async def _fetch_child_product_ids(
@@ -2957,39 +3216,6 @@ async def _fetch_product_for_query_body(
             session_parent_pid,
             fallback_pid,
         )
-    elif not target_url and fallback_pid:
-        province_id = resolve_province_from_text(user_message) or CPS_PROVINCE_ID
-        try:
-            stats["cps_product_detail_calls"] += 1
-            product = await get_product_by_id(fallback_pid, province_id=province_id)
-            if product:
-                detail = normalize_product_detail(
-                    product,
-                    url=fallback_url or "",
-                    url_info={"product_id": fallback_pid},
-                )
-                if session_parent_pid and not detail.get("parent_id"):
-                    detail["parent_id"] = session_parent_pid
-                stats["resolve_source"] = "session_fallback_product_id"
-                follow_hints = _extract_variant_hints(user_message) or _extract_variant_hints(
-                    keywords
-                )
-                if follow_hints:
-                    variant_query = merge_follow_up_variant_into_keywords(
-                        keywords,
-                        user_message,
-                    )
-                    detail = await resolve_product_variant(
-                        variant_query or keywords,
-                        detail,
-                        province_id=province_id,
-                    )
-        except Exception as exc:
-            logger.warning("CPS fetch product_id=%s thất bại: %s", fallback_pid, exc)
-
-    if not detail and not target_url and fallback_url:
-        target_url = fallback_url
-        stats["resolve_source"] = "session_fallback_url"
 
     if not detail and target_url:
         try:
@@ -3012,6 +3238,8 @@ async def _fetch_product_for_query_body(
             return [], {}, stats
     elif not detail:
         province_id = resolve_province_from_text(user_message) or CPS_PROVINCE_ID
+        map_terms = _product_terms_for_resolution(keywords, user_message)
+        search_terms = _api_search_terms(keywords, user_message)
         prioritize_product_detail = not _is_category_filter_browse_query(
             user_message or keywords
         )
@@ -3028,9 +3256,9 @@ async def _fetch_product_for_query_body(
                 stats["cps_product_detail_calls"] += 1
 
         if not detail:
-            if prioritize_product_detail and keywords and _is_product_map_query(keywords):
+            if prioritize_product_detail and map_terms and _is_product_map_query(map_terms):
                 map_hit = await _fetch_product_from_map(
-                    keywords,
+                    map_terms,
                     province_id=province_id,
                 )
                 if map_hit:
@@ -3044,7 +3272,7 @@ async def _fetch_product_for_query_body(
                         name="Product map",
                         operation="product_map",
                         endpoint=PRODUCT_MAP_PATH,
-                        query=keywords,
+                        query=map_terms,
                         product_id=detail.get("product_id", ""),
                         matched_name=detail.get("product_map_matched_name", ""),
                     )
@@ -3098,10 +3326,10 @@ async def _fetch_product_for_query_body(
                 )
 
         # Layer 0: product map — fallback khi category browse được ưu tiên nhưng chưa resolve
-        if not detail and keywords and _is_product_map_query(keywords):
+        if not detail and map_terms and _is_product_map_query(map_terms):
             if not prioritize_product_detail:
                 map_hit = await _fetch_product_from_map(
-                    keywords,
+                    map_terms,
                     province_id=province_id,
                 )
                 if map_hit:
@@ -3115,44 +3343,44 @@ async def _fetch_product_for_query_body(
                         name="Product map",
                         operation="product_map",
                         endpoint=PRODUCT_MAP_PATH,
-                        query=keywords,
+                        query=map_terms,
                         product_id=detail.get("product_id", ""),
                         matched_name=detail.get("product_map_matched_name", ""),
                     )
 
         # Layer 1: CPS search (advanced_search → quick_search fallback)
-        if not detail and keywords:
+        if not detail and search_terms:
             stats["search_products_calls"] += 1
             _append_api_call(
                 stats,
                 name="CPS GraphQL Search",
                 operation="search_products",
                 endpoint=CPS_GRAPHQL_V2_ENDPOINT,
-                query=keywords,
+                query=search_terms,
             )
             search_results = await search_products(
-                keywords,
+                search_terms,
                 province_id=province_id,
             )
             if search_results:
                 stats["resolve_source"] = "search_results"
-                best = _pick_best_search_result(search_results, keywords)
+                best = _pick_best_search_result(search_results, search_terms)
                 pick_url = product_url_from_record(best or search_results[0])
                 if pick_url:
                     try:
                         stats["cps_url_info_calls"] += 1
                         stats["cps_product_detail_calls"] += 1
-                        detail = await fetch_product_from_url(pick_url, keywords=keywords)
-                        if detail and keywords:
+                        detail = await fetch_product_from_url(pick_url, keywords=search_terms)
+                        if detail and search_terms:
                             detail = await resolve_product_variant(
-                                keywords,
+                                search_terms,
                                 detail,
                                 province_id=province_id,
                             )
                     except Exception as exc:
                         logger.warning("CPS fetch thất bại (%s): %s", pick_url, exc)
                 if len(search_results) >= 2 and search_results_need_advanced(
-                    search_results[:2], keywords
+                    search_results[:2], search_terms
                 ):
                     stats["ambiguous_search"] = True
 
@@ -3164,7 +3392,7 @@ async def _fetch_product_for_query_body(
             try:
                 from cps_bot.core.api_trace import build_curl_get
 
-                query = f"site:cellphones.com.vn {keywords}".strip()
+                query = f"site:cellphones.com.vn {search_terms}".strip()
                 params = {
                     "engine": "google",
                     "q": query,
@@ -3210,6 +3438,17 @@ async def _fetch_product_for_query_body(
                         break
                 except Exception as exc:
                     logger.warning("CPS fetch thất bại (%s): %s", url, exc)
+
+    if not detail and identity_ok and (fallback_pid or fallback_url):
+        detail = await _apply_session_product_fallback(
+            fallback_pid=fallback_pid,
+            fallback_url=fallback_url,
+            session_parent_pid=session_parent_pid,
+            session_last_product_name=session_last_product_name,
+            user_message=user_message,
+            keywords=keywords,
+            stats=stats,
+        )
 
     if not detail:
         return search_results, {}, stats
@@ -3510,11 +3749,14 @@ def _is_category_filter_browse_query(text: str) -> bool:
 def classify_question_scenarios(text: str) -> dict[str, bool]:
     """Phân loại kịch bản CSV — dùng để enrich payload và prompt Gemini."""
     value = text or ""
+    from cps_bot.cps.cps_installment import is_installment_query
+
+    installment = bool(_INSTALLMENT_QUESTION_RE.search(value)) or is_installment_query(value)
     return {
         "price_promotion": bool(_PRICE_QUESTION_RE.search(value)),
         "shop_stock": is_stock_availability_query(value),
         "trade_in": bool(_TRADE_IN_QUESTION_RE.search(value)),
-        "installment": bool(_INSTALLMENT_QUESTION_RE.search(value)),
+        "installment": installment,
         "warranty": bool(_WARRANTY_QUESTION_RE.search(value)),
         "compare": bool(_COMPARE_QUESTION_RE.search(value)),
         "specs": bool(_SPECS_QUESTION_RE.search(value)),
@@ -3714,13 +3956,30 @@ async def _enrich_payload_for_scenarios_inner(
     scenarios = classify_question_scenarios(user_question)
     payload["question_scenarios"] = scenarios
     fetched: dict[str, bool] = {}
+    unavailable = is_unavailable_product_detail(detail)
+    if unavailable:
+        primary = payload.get("primary_product") or {}
+        if isinstance(primary, dict):
+            for key in (
+                "member_prices",
+                "promotions",
+                "promotion_info",
+                "member_promotion",
+                "stock_quantity",
+                "company_stock_quantity",
+                "up_sell",
+            ):
+                primary.pop(key, None)
+            payload["primary_product"] = primary
+        payload.pop("shop_stock", None)
+        payload.pop("online_stock", None)
     pid = (
         province_id
         if province_id is not None
         else resolve_province_from_text(user_question) or CPS_PROVINCE_ID
     )
 
-    if scenarios.get("trade_in") or scenarios.get("price_promotion"):
+    if not unavailable and (scenarios.get("trade_in") or scenarios.get("price_promotion")):
         trade = await fetch_trade_promo_for_product(detail, province_id=pid)
         if trade:
             payload["trade_promo"] = trade
@@ -3732,7 +3991,7 @@ async def _enrich_payload_for_scenarios_inner(
             payload["extended_warranty"] = warranty
             fetched["extended_warranty"] = True
 
-    if scenarios.get("shop_stock") and detail.get("product_id"):
+    if not unavailable and scenarios.get("shop_stock") and detail.get("product_id"):
         other = await fetch_instock_other_provinces(
             detail["product_id"],
             province_id=pid,
@@ -3774,10 +4033,16 @@ async def _enrich_payload_for_scenarios_inner(
 
     from cps_bot.cps.cps_enrich import enrich_extended_scenarios
 
+    extended_scenarios = dict(scenarios)
+    if unavailable:
+        extended_scenarios["trade_in"] = False
+        extended_scenarios["trade_in_device"] = False
+        extended_scenarios["combo"] = False
+        extended_scenarios["shop_stock"] = False
     extended = await enrich_extended_scenarios(
         payload,
         detail,
-        scenarios,
+        extended_scenarios,
         province_id=pid,
     )
     fetched.update(extended)
@@ -3786,15 +4051,21 @@ async def _enrich_payload_for_scenarios_inner(
         not _is_browse_list_detail(detail)
         and not payload.get("compare_mode")
     ):
-        rec_pid = _recommendation_product_id(detail)
-        if rec_pid:
-            recommended = await fetch_recommended_products(
-                rec_pid,
-                province_id=pid,
-            )
-            if recommended:
-                payload["recommended_products"] = recommended
-                fetched["recommended_products"] = True
+        if unavailable:
+            similar = await fetch_similar_products(detail, province_id=pid, limit=10)
+            if similar:
+                payload["similar_products"] = similar
+                fetched["similar_products"] = True
+        else:
+            rec_pid = _recommendation_product_id(detail)
+            if rec_pid:
+                recommended = await fetch_recommended_products(
+                    rec_pid,
+                    province_id=pid,
+                )
+                if recommended:
+                    payload["recommended_products"] = recommended
+                    fetched["recommended_products"] = True
 
     if scenarios.get("warranty") and not detail.get("warranty_information"):
         if not payload.get("product_faqs"):

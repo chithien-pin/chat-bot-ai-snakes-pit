@@ -4,10 +4,11 @@ Browse sản phẩm theo category + attribute filter (thay search khi khớp b�
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from cps_bot.browse.budget_browse import parse_budget_constraint
+from cps_bot.browse.budget_browse import parse_budget_constraint, strip_budget_phrases_for_keywords
 from cps_bot.browse.category_resolver import (
     is_price_filter_menu_name,
     is_used_product_menu_name,
@@ -27,7 +28,8 @@ _FILTER_HINT_RE = re.compile(
     r"chip|cpu|ram|ssd|hdd|ổ cứng|o cung|"
     r"intel|amd|ryzen|core i\d|"
     r"android|ios|iphone|"
-    r"inch|gb|tb|mah|"
+    r"inch|gb|tb|mah|pa|pascal|"
+    r"lực hút|luc hut|sức hút|suc hut|"
     r"học tập|hoc tap|gaming|đồ họa|do hoa|"
     r"mỏng nhẹ|mong nhe|"
     r"hãng|hang|thương hiệu|thuong hieu|"
@@ -107,6 +109,76 @@ _ATTR_MATCH_NOISE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Attribute cho phép chọn nhiều giá trị cùng lúc (URL: key=val1,val2,val3)
+_MULTI_SELECT_ATTR_KEYS = frozenset({"mobile_nhu_cau_sd"})
+_USAGE_URI_PHRASES: tuple[tuple[str, str], ...] = (
+    ("choi-game", "choi game"),
+    ("choi-game", "game muot"),
+    ("choi-game", "game mượt"),
+    ("choi-game", "gaming"),
+    ("pin-trau", "pin trau"),
+    ("pin-trau", "pin khoe"),
+    ("chup-anh-dep", "chup anh dep"),
+    ("chup-anh-dep", "chup anh"),
+    ("chup-anh-dep", "camera dep"),
+    ("lam-viec-hoc-tap", "hoc online"),
+    ("lam-viec-hoc-tap", "hoc tap"),
+    ("lam-viec-hoc-tap", "lam viec hoc tap"),
+    ("mong-nhe", "mong nhe"),
+    ("mong-nhe", "nhe"),
+    ("livestream", "livestream"),
+    ("livestream", "stream"),
+    ("dung-luong-lon", "dung luong lon"),
+    ("cau-hinh-cao", "cau hinh cao"),
+)
+
+# Brand subcategory browse — iphone + budget → mobile/apple.html?price=...
+_MOBILE_BRAND_BROWSE: tuple[tuple[re.Pattern[str], str, str, str, str], ...] = (
+    (re.compile(r"\biphone\b", re.I), "132", "iPhone", "mobile/apple.html", "Apple"),
+)
+
+# Nhu cầu sử dụng laptop (category 380) → nhu_cau_su_dung nice_uri
+# Câu tự nhiên kiểu "designer làm 3D", "laptop dựng phim" → browse laptop theo nhu cầu.
+_LAPTOP_USECASE_BROWSE: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"\b3d\b|render|dựng phim|dung phim|dựng video|dung video|"
+            r"đồ họa|do hoa|kỹ xảo|ky xao|"
+            r"designer|thiết kế đồ họa|thiet ke do hoa|"
+            r"chỉnh sửa video|chinh sua video|edit video|dựng hình|dung hinh",
+            re.IGNORECASE,
+        ),
+        "do-hoa-ky-thuat",
+        "Đồ họa - Kỹ thuật",
+    ),
+    (
+        re.compile(r"sáng tạo nội dung|sang tao noi dung|content creator", re.IGNORECASE),
+        "laptop-sang-tao-noi-dung",
+        "Laptop sáng tạo nội dung",
+    ),
+    (
+        re.compile(r"\bgaming\b|chơi game|choi game|game nặng|game nang", re.IGNORECASE),
+        "gaming",
+        "Gaming",
+    ),
+)
+# Dấu hiệu câu đang nói về laptop/PC (tránh nhầm điện thoại/máy ảnh/màn hình)
+_LAPTOP_DEVICE_HINT_RE = re.compile(
+    r"\b(?:laptop|lap top|máy tính|may tinh|máy trạm|may tram|"
+    r"workstation|pc|máy để bàn|may de ban|notebook|"
+    r"máy làm|may lam|máy chạy|may chay|designer|render)\b",
+    re.IGNORECASE,
+)
+# Danh mục khác đã rõ → không ép về laptop
+_NON_LAPTOP_DEVICE_RE = re.compile(
+    r"\b(?:điện thoại|dien thoai|smartphone|máy ảnh|may anh|camera|"
+    r"màn hình|man hinh|monitor|tivi|tv|đồng hồ|dong ho|tablet|"
+    r"máy tính bảng|may tinh bang|tai nghe|loa\b|máy giặt|may giat|"
+    r"máy lạnh|may lanh|tủ lạnh|tu lanh)\b",
+    re.IGNORECASE,
+)
+
+_SCREEN_SIZE_ATTR_KEY = "screen_size"
 
 
 @dataclass
@@ -162,7 +234,7 @@ def build_category_filter_url(
             brand_subpath = uris[0]
             continue
         if key and uris:
-            other_params.append(f"{key}={uris[0]}")
+            other_params.append(f"{key}={','.join(uris)}")
     if brand_subpath and base.endswith("pin-du-phong.html"):
         base = base.replace(".html", f"/{brand_subpath}.html")
 
@@ -175,11 +247,34 @@ def build_category_filter_url(
     return f"{base}{sep}{'&'.join(params)}"
 
 
+def _fold_vn(text: str) -> str:
+    s = unicodedata.normalize("NFD", (text or "").lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.replace("đ", "d")
+
+
 def _norm_filter_text(text: str) -> str:
-    value = (text or "").lower()
+    value = _fold_vn(text)
     value = re.sub(r"(\d{4,5})mah\b", r"\1 mah", value, flags=re.IGNORECASE)
+    # 10.000 pa / 10000Pa → 10000 pa
+    value = re.sub(
+        r"(\d{1,2})\.(\d{3})\s*pa\b",
+        lambda m: f"{m.group(1)}{m.group(2)} pa",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"(\d+)\s*pa\b", r"\1 pa", value, flags=re.IGNORECASE)
     value = re.sub(r"[^\w\s]", " ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _usage_uris_from_text(text_norm: str) -> set[str]:
+    folded = _fold_vn(text_norm)
+    uris: set[str] = set()
+    for uri, phrase in _USAGE_URI_PHRASES:
+        if phrase in folded:
+            uris.add(uri)
+    return uris
 
 
 def _extract_feature_phrases(text: str) -> list[str]:
@@ -194,12 +289,20 @@ def _extract_feature_phrases(text: str) -> list[str]:
     return phrases
 
 
+# Token ngắn nhưng có nghĩa (3d, 4k, 5g…) — không bị loại như stopword
+_SHORT_SIGNIFICANT_TOKENS = frozenset({"3d", "2d", "4k", "8k", "5g", "4g", "ai"})
+
+
 def _meaningful_query_tokens(text_norm: str) -> set[str]:
     stop = {
         "cho", "toi", "mot", "so", "van", "tu", "cac", "mau", "danh", "sach",
         "xin", "giup", "minh", "ban", "em", "anh", "chi", "co", "khong",
     }
-    return {t for t in text_norm.split() if len(t) >= 3 and t not in stop}
+    return {
+        t
+        for t in text_norm.split()
+        if (len(t) >= 3 or t in _SHORT_SIGNIFICANT_TOKENS) and t not in stop
+    }
 
 
 def _score_attribute_option(text_norm: str, option: dict[str, Any], *, feature_phrases: list[str]) -> int:
@@ -208,26 +311,32 @@ def _score_attribute_option(text_norm: str, option: dict[str, Any], *, feature_p
     uri_norm = nice_uri.replace("-", " ")
 
     score = 0
+    has_evidence = False
     if label_norm and label_norm in text_norm:
         score += 220 + len(label_norm) * 4
+        has_evidence = True
     if uri_norm and uri_norm in text_norm:
         score += 180
+        has_evidence = True
 
     for phrase in feature_phrases:
         if phrase in label_norm or phrase in uri_norm.replace("-", " "):
             score += 200
+            has_evidence = True
 
     opt_tokens = set(option.get("tokens") or [])
     query_tokens = _meaningful_query_tokens(text_norm)
     overlap = opt_tokens & query_tokens
     if overlap:
         score += len(overlap) * 12
+        has_evidence = True
 
     for token in query_tokens:
-        if len(token) < 4 and token not in ("anker", "mah"):
+        if len(token) < 4 and token not in ("anker", "mah") and token not in _SHORT_SIGNIFICANT_TOKENS:
             continue
         if token in uri_norm or token in label_norm:
             score += 70
+            has_evidence = True
 
     # Tránh khớp Pro/Max/Plus khi user không nhắc biến thể
     if not _VARIANT_EXCLUDE_RE.search(text_norm):
@@ -235,6 +344,11 @@ def _score_attribute_option(text_norm: str, option: dict[str, Any], *, feature_p
             if variant in label_norm.split() or variant in uri_norm.split("-"):
                 score -= 55
 
+    # Không có bằng chứng thật (chỉ trùng độ dài) → không chọn filter
+    if not has_evidence:
+        return 0
+
+    # Độ dài label chỉ dùng làm tiebreak giữa các option ĐÃ match thật
     if label_norm:
         score += len(label_norm)
 
@@ -254,6 +368,7 @@ def match_attribute_filters(
     category_data: dict[str, Any],
     *,
     strip_menu_name: str = "",
+    skip_screen_size: bool = False,
 ) -> list[tuple[str, list[str], list[str]]]:
     """
     Trích attribute filter từ câu hỏi — chọn option khớp nhất (hoặc cả nhóm nếu chỉ nêu hãng/chip).
@@ -270,6 +385,8 @@ def match_attribute_filters(
     for attr in category_data.get("attributes") or []:
         key = str(attr.get("key") or "")
         if not key:
+            continue
+        if skip_screen_size and key == _SCREEN_SIZE_ATTR_KEY:
             continue
 
         scored: list[tuple[int, dict[str, Any]]] = []
@@ -294,8 +411,25 @@ def match_attribute_filters(
         if best_score < 35:
             continue
 
-        selected = [opt for score, opt in scored if score >= best_score - 5]
-        if family_tokens:
+        if key in _MULTI_SELECT_ATTR_KEYS:
+            usage_hits = _usage_uris_from_text(text_norm)
+            option_by_uri = {
+                str(o.get("nice_uri") or ""): o for _, o in scored
+            }
+            selected = [
+                option_by_uri[uri]
+                for uri in usage_hits
+                if uri in option_by_uri
+            ]
+            if not selected:
+                selected = [
+                    opt for score, opt in scored if score >= 80
+                ]
+            if not selected:
+                selected = [
+                    opt for score, opt in scored if score >= best_score - 5
+                ]
+        elif family_tokens:
             family = family_tokens[0]
             family_opts = [
                 opt
@@ -304,8 +438,14 @@ def match_attribute_filters(
             ]
             if len(family_opts) >= 2:
                 selected = family_opts
+            else:
+                selected = [
+                    opt for score, opt in scored if score >= best_score - 5
+                ]
+        else:
+            selected = [opt for score, opt in scored if score >= best_score - 5]
 
-        nice_uris = [str(o["nice_uri"]) for o in selected]
+        nice_uris = list(dict.fromkeys(str(o["nice_uri"]) for o in selected))
         labels = [str(o["label"]) for o in selected]
         matched.append((key, nice_uris, labels))
 
@@ -330,8 +470,156 @@ def _prune_redundant_attribute_matches(
     keys = {item[0] for item in pruned}
     if "tinh_nang_dac_biet" in keys:
         pruned = [item for item in pruned if item[0] != "dan_man_hinh_loai"]
+    if "mobile_nhu_cau_sd" in keys:
+        usage_uris = set()
+        for key, uris, _labels in pruned:
+            if key == "mobile_nhu_cau_sd":
+                usage_uris.update(uris)
+        if "chup-anh-dep" in usage_uris:
+            pruned = [
+                item for item in pruned if item[0] != "mobile_camera_feature"
+            ]
+
+    # Lực hút (Pa) rõ ràng → bỏ tính năng chỉ khớp nhầm qua "sức hút"
+    if "robot_luc_hut_filter" in keys:
+        pruned = [
+            item for item in pruned if item[0] != "robot_hut_bui_tinh_nang"
+        ]
+        # Category đã là máy hút bụi → không cần thêm filter chức năng "hút bụi"
+        pruned = [
+            item
+            for item in pruned
+            if not (item[0] == "robot_chuc_nang" and item[1] == ["hut-bui"])
+        ]
 
     return pruned
+
+
+def _extract_suction_power_filter(text: str) -> tuple[str, list[str], list[str]] | None:
+    """
+    Lực hút Pa → robot_luc_hut_filter nice_uri.
+    Vd: "lực hút trên 10000 pa" → tren-10000pa
+    """
+    norm = _norm_filter_text(text)
+    if not re.search(r"\bpa\b", norm):
+        return None
+
+    def _pick_uri(pa: int, *, over: bool, under: bool) -> tuple[str, str] | None:
+        if over or (not under and pa >= 10000):
+            if pa >= 10000:
+                return "tren-10000pa", "Trên 10000pa"
+        if under:
+            if pa <= 2000:
+                return "tu-2001-5000pa", "Từ 2001 - 5000pa"
+            if pa <= 5000:
+                return "tu-2001-5000pa", "Từ 2001 - 5000pa"
+            if pa <= 10000:
+                return "tu-5001-10000pa", "Từ 5001 - 10000pa"
+        if over:
+            if pa >= 5001:
+                return "tu-5001-10000pa", "Từ 5001 - 10000pa"
+            if pa >= 2001:
+                return "tu-2001-5000pa", "Từ 2001 - 5000pa"
+        return None
+
+    over_m = re.search(r"(?:tren|>|>=)\s*(\d+)\s*pa\b", norm)
+    if over_m:
+        hit = _pick_uri(int(over_m.group(1)), over=True, under=False)
+        if hit:
+            uri, label = hit
+            return ("robot_luc_hut_filter", [uri], [label])
+
+    under_m = re.search(r"(?:duoi|<|<=)\s*(\d+)\s*pa\b", norm)
+    if under_m:
+        hit = _pick_uri(int(under_m.group(1)), over=False, under=True)
+        if hit:
+            uri, label = hit
+            return ("robot_luc_hut_filter", [uri], [label])
+
+    return None
+
+
+def _resolve_brand_subcategory_browse(text: str) -> CategoryFilterRequest | None:
+    """
+    Browse theo hãng + ngân sách — vd. điện thoại iphone dưới 20 triệu
+    → mobile/apple.html?price=0-20000000
+    """
+    original = (text or "").strip()
+    if not original:
+        return None
+    if not parse_budget_constraint(original):
+        return None
+    if (
+        _SPECIFIC_PRODUCT_QUERY_RE.search(original)
+        and not _CATEGORY_BROWSE_INTENT_RE.search(original)
+    ):
+        return None
+
+    for pattern, category_id, menu_name, page_path, category_name in _MOBILE_BRAND_BROWSE:
+        if not pattern.search(original):
+            continue
+        return CategoryFilterRequest(
+            category_id=category_id,
+            menu_name=menu_name,
+            category_name=category_name,
+            dynamic_filter="",
+            matched_filters=[],
+            is_subcategory_menu=True,
+            page_path=page_path,
+            match_reason=f"brand_subcategory:{menu_name}",
+        )
+    return None
+
+
+def _laptop_usecase_matches(text: str) -> list[tuple[str, list[str], list[str]]]:
+    """Trích nhu_cau_su_dung từ câu (designer/3D/gaming…) — [] nếu không có."""
+    original = (text or "").strip()
+    matched: list[tuple[str, list[str], list[str]]] = []
+    seen_uris: set[str] = set()
+    for pattern, nice_uri, label in _LAPTOP_USECASE_BROWSE:
+        if pattern.search(original) and nice_uri not in seen_uris:
+            matched.append(("nhu_cau_su_dung", [nice_uri], [label]))
+            seen_uris.add(nice_uri)
+    return matched
+
+
+def _resolve_laptop_usecase_browse(text: str) -> CategoryFilterRequest | None:
+    """
+    Câu tả nhu cầu (designer/3D/dựng phim…) → browse laptop theo nhu_cau_su_dung.
+    Chỉ kích hoạt khi có ngữ cảnh laptop/PC và không nói rõ thiết bị khác.
+    """
+    original = (text or "").strip()
+    if not original:
+        return None
+    if _NON_LAPTOP_DEVICE_RE.search(original):
+        return None
+    if not _LAPTOP_DEVICE_HINT_RE.search(original):
+        return None
+
+    matched = _laptop_usecase_matches(original)
+    if not matched:
+        return None
+
+    category_data = get_category_data("380")
+    if not category_data:
+        return None
+
+    filter_pairs = [(key, uris) for key, uris, _labels in matched]
+    dynamic_filter = build_dynamic_filter_clause(filter_pairs)
+    matched_meta = [
+        {"key": key, "nice_uris": uris, "labels": labels}
+        for key, uris, labels in matched
+    ]
+    return CategoryFilterRequest(
+        category_id="380",
+        menu_name="Laptop",
+        category_name=str(category_data.get("name") or "Laptop"),
+        dynamic_filter=dynamic_filter,
+        matched_filters=matched_meta,
+        is_subcategory_menu=False,
+        page_path="laptop.html",
+        match_reason="laptop_usecase",
+    )
 
 
 def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
@@ -342,9 +630,13 @@ def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
     if not original:
         return None
 
+    brand_hit = _resolve_brand_subcategory_browse(original)
+    if brand_hit:
+        return brand_hit
+
     cat_hit = resolve_category_match(original)
     if not cat_hit:
-        return None
+        return _resolve_laptop_usecase_browse(original)
 
     cat_hit = refine_to_deepest_category_match(original, cat_hit)
 
@@ -359,12 +651,31 @@ def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
 
     page_path = cat_hit.page_path or resolve_category_page_path(category_id, menu_name)
     filter_price = resolve_filter_price(original)
+    attr_scrubbed = strip_budget_phrases_for_keywords(original)
+    has_budget = parse_budget_constraint(original) is not None
     attr_matches = match_attribute_filters(
-        original,
+        attr_scrubbed,
         category_data,
         strip_menu_name=menu_name,
+        skip_screen_size=has_budget,
     )
+    suction_hit = _extract_suction_power_filter(original)
+    if suction_hit:
+        key, uris, labels = suction_hit
+        attr_matches = [
+            (key, uris, labels),
+            *[
+                m for m in attr_matches
+                if m[0] not in (key, "robot_hut_bui_tinh_nang")
+            ],
+        ]
     attr_matches = _prune_redundant_attribute_matches(page_path, attr_matches)
+
+    # Laptop: câu tả nhu cầu (designer/3D…) khớp nhu_cau_su_dung dù token không trùng label
+    if category_id == "380" and not any(k == "nhu_cau_su_dung" for k, _, _ in attr_matches):
+        usecase = _laptop_usecase_matches(original)
+        if usecase:
+            attr_matches = usecase + attr_matches
     is_subcategory = (
         len(menu_name.split()) >= 2
         and not is_price_filter_menu_name(menu_name)
@@ -443,6 +754,10 @@ def is_category_filter_browse_query(text: str) -> bool:
     if resolve_filter_price(value):
         return True
     if req.is_subcategory_menu:
+        # User gọi đúng tên subcategory (vd "đồng hồ thể thao") → hiện danh sách.
+        menu_norm = _norm_filter_text(req.menu_name)
+        if menu_norm and menu_norm in _norm_filter_text(value):
+            return True
         if not _CATEGORY_BROWSE_INTENT_RE.search(value) and not _FILTER_HINT_RE.search(value):
             return False
         return True

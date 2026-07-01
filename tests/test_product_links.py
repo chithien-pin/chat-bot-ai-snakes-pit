@@ -71,8 +71,18 @@ def test_appendix_for_compare_mode() -> None:
     assert should_attach_product_links_appendix(None, compare_mode=True)
 
 
+def test_appendix_skipped_when_browse_fetch_failed() -> None:
+    """Scenario budget_browse nhưng fetch thất bại → không gắn link SP lạ."""
+    detail = {"name": "Máy ảnh Canon EOS R50"}
+    assert not should_attach_product_links_appendix(
+        detail,
+        scenarios={"budget_browse": True},
+    )
+
+
 if __name__ == "__main__":
     test_url_from_url_key()
     test_graphql_product_url()
     test_links_appendix()
+    test_appendix_skipped_when_browse_fetch_failed()
     print("OK — product link tests passed")

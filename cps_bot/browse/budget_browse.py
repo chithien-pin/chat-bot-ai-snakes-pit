@@ -79,6 +79,35 @@ _BUDGET_STRIP_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:tầm|tam)\s+", re.IGNORECASE),
 )
 
+# Số kèm đơn vị kỹ thuật (Pa, W, mAh…) — không phải giá VND
+_PHYSICAL_SPEC_UNIT_RE = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*"
+    r"(?:pa|pascal|w\b|wat|mah|wh\b|inch|in\b|mm|cm|kg|"
+    r"lit|lít|l\b|hz|gb|tb|mp|m2|m²)\b",
+    re.IGNORECASE,
+)
+_PHYSICAL_SPEC_CONTEXT_RE = re.compile(
+    r"\b(?:lực hút|luc hut|sức hút|suc hut|công suất|cong suat|"
+    r"dung luong|dung tích|dung tich|pin\b|ram\b|ssd\b)\b",
+    re.IGNORECASE,
+)
+
+
+def _amount_is_physical_spec(text: str, match: re.Match[str]) -> bool:
+    """True khi con số trong match là thông số kỹ thuật, không phải ngân sách."""
+    value = text or ""
+    start, end = match.span()
+    tail = value[end : end + 16].lower()
+    if re.match(r"\s*(?:pa|pascal|w\b|wat|mah|wh\b|inch|in\b|mm|cm|kg|"
+                r"lit|lít|l\b|hz|gb|tb|mp|m2|m²)\b", tail):
+        return True
+    if _PHYSICAL_SPEC_UNIT_RE.match(value[start:end] + tail):
+        return True
+    head = value[max(0, start - 40) : start]
+    if _PHYSICAL_SPEC_CONTEXT_RE.search(head):
+        return True
+    return False
+
 _CATEGORY_HINTS: tuple[str, ...] = (
     "điện thoại",
     "dien thoai",
@@ -105,6 +134,10 @@ _CATEGORY_HINTS: tuple[str, ...] = (
     "máy ảnh",
     "may anh",
     "camera",
+    "máy hút bụi",
+    "may hut bui",
+    "hút bụi",
+    "hut bui",
     "nồi chiên",
     "noi chien",
     "máy lạnh",
@@ -181,10 +214,10 @@ def parse_budget_constraint(text: str) -> BudgetConstraint | None:
         max_vnd = _to_vnd(range_match.group(2), "triệu")
     else:
         under = _BUDGET_UNDER_RE.search(value)
-        if under:
+        if under and not _amount_is_physical_spec(value, under):
             max_vnd = _to_vnd(under.group(1), "triệu")
         over = _BUDGET_OVER_RE.search(value)
-        if over:
+        if over and not _amount_is_physical_spec(value, over):
             min_vnd = _to_vnd(over.group(1), "triệu")
         tam = _BUDGET_TAM_GIA_RE.search(value)
         if tam and max_vnd is None and min_vnd is None:
@@ -198,6 +231,21 @@ def parse_budget_constraint(text: str) -> BudgetConstraint | None:
             k_only = _BUDGET_K_ONLY_RE.search(value)
             if k_only:
                 max_vnd = int(k_only.group(1)) * 1_000
+
+        # Bare "X triệu" (không có dưới/trên/tầm) → range (X-1) – (X+1) triệu
+        if max_vnd is None and min_vnd is None:
+            bare = _BUDGET_AMOUNT_RE.search(value)
+            if bare and bare.group(2):
+                unit = (bare.group(2) or "").lower()
+                if unit in ("triệu", "trieu", "tr", "tỷ", "ty"):
+                    center = _to_vnd(bare.group(1), unit)
+                    if unit in ("tỷ", "ty"):
+                        min_vnd = int(center * 0.85)
+                        max_vnd = int(center * 1.15)
+                    else:
+                        x_million = center // 1_000_000
+                        min_vnd = max(0, (x_million - 1)) * 1_000_000
+                        max_vnd = (x_million + 1) * 1_000_000
 
     if min_vnd is None and max_vnd is None:
         return None
@@ -217,8 +265,17 @@ def _extract_category(text: str) -> str:
 def strip_budget_phrases_for_keywords(text: str) -> str:
     """Giữ danh mục/hãng + dung tích — bỏ cụm ngân sách."""
     value = (text or "").strip()
+    original = value
     for pattern in _BUDGET_STRIP_RES:
-        value = pattern.sub(" ", value)
+        if pattern in (_BUDGET_UNDER_RE, _BUDGET_OVER_RE):
+            value = pattern.sub(
+                lambda m, src=original: (
+                    " " if not _amount_is_physical_spec(src, m) else m.group(0)
+                ),
+                value,
+            )
+        else:
+            value = pattern.sub(" ", value)
     value = re.sub(r"\s+", " ", value).strip(" ,.-")
     category = _extract_category(text)
     if category and category not in value.lower():

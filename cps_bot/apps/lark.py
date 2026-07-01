@@ -24,6 +24,8 @@ from typing import Any
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     DeleteMessageRequest,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
     UpdateMessageRequest,
@@ -108,6 +110,7 @@ from cps_bot.browse.fast_reply import (
 from cps_bot.core.metrics import emit_metric
 from cps_bot.core.user_display import resolve_lark_user_name
 from cps_bot.llm.message_intent import is_social_message, resolve_message_intent
+from cps_bot.llm.query_router import apply_route_to_keywords, resolve_query_route
 from cps_bot.browse.budget_browse import is_budget_browse_query
 from cps_bot.core.location_flow import handle_province_gate, shop_question_for_session
 from cps_bot.cps.scraper import build_product_payload, build_response_link_url, format_product_links_appendix, is_browse_list_mode, product_url_from_record, should_attach_product_links_appendix
@@ -496,26 +499,79 @@ class LarkMessenger:
     def send_final(self, text: str) -> str:
         if self.status_message_id:
             payload = lark_interactive_content(build_lark_status_card(text))
-            if self._update(self.status_message_id, payload, msg_type="interactive"):
+            if self._patch_interactive(self.status_message_id, payload):
                 return self.status_message_id
-            self._clear_status_message()
+            logger.warning(
+                "Lark PATCH text card thất bại — gửi reply mới (giữ tin trạng thái)"
+            )
+            self.status_message_id = None
         return self.reply(text)
 
     def send_final_interactive(self, card: dict[str, Any]) -> str:
         payload = lark_interactive_content(card)
         if self.status_message_id:
-            if self._update(self.status_message_id, payload, msg_type="interactive"):
+            if self._patch_interactive(self.status_message_id, payload):
                 return self.status_message_id
-            logger.info(
-                "Lark không PATCH được card — xóa tin trạng thái rồi gửi card mới"
+            logger.warning(
+                "Lark PATCH card thất bại — gửi reply mới (giữ tin trạng thái)"
             )
-            self._clear_status_message()
+            self.status_message_id = None
         return self.reply_interactive(card)
 
-    def _clear_status_message(self) -> None:
-        if self.status_message_id:
-            self._delete(self.status_message_id)
-            self.status_message_id = None
+    def _patch_interactive(self, message_id: str, content: str) -> bool:
+        """PATCH interactive card — PUT (message.update) không hỗ trợ card."""
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder()
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.patch(request)
+        if not response.success():
+            logger.warning(
+                "Lark PATCH lỗi: code=%s msg=%s message_id=%s",
+                response.code,
+                response.msg,
+                message_id,
+            )
+            return False
+        return True
+
+    def _update(
+        self,
+        message_id: str,
+        content: str,
+        *,
+        msg_type: str = "text",
+    ) -> bool:
+        if msg_type == "interactive":
+            return self._patch_interactive(message_id, content)
+        body_content = text_content(content)
+        request = (
+            UpdateMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                UpdateMessageRequestBody.builder()
+                .msg_type("text")
+                .content(body_content)
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.update(request)
+        if not response.success():
+            logger.warning(
+                "Lark update lỗi: code=%s msg=%s message_id=%s",
+                response.code,
+                response.msg,
+                message_id,
+            )
+            return False
+        return True
 
     def reply_interactive(self, card: dict[str, Any]) -> str:
         request = (
@@ -540,39 +596,6 @@ class LarkMessenger:
         if response.data and response.data.message_id:
             return response.data.message_id
         return ""
-
-    def _update(
-        self,
-        message_id: str,
-        content: str,
-        *,
-        msg_type: str = "text",
-    ) -> bool:
-        if msg_type == "text":
-            body_content = text_content(content)
-        else:
-            body_content = content
-        request = (
-            UpdateMessageRequest.builder()
-            .message_id(message_id)
-            .request_body(
-                UpdateMessageRequestBody.builder()
-                .msg_type(msg_type)
-                .content(body_content)
-                .build()
-            )
-            .build()
-        )
-        response = self.client.im.v1.message.update(request)
-        if not response.success():
-            logger.warning(
-                "Lark update lỗi: code=%s msg=%s message_id=%s",
-                response.code,
-                response.msg,
-                message_id,
-            )
-            return False
-        return True
 
     def _delete(self, message_id: str) -> bool:
         request = (
@@ -867,11 +890,29 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         else:
             stock_browse = is_stock_status_browse_query(user_question)
             budget_browse = is_budget_browse_query(user_question)
-            if needs_query_expansion(user_question) and not stock_browse and not budget_browse:
-                messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
-            search_keywords = await asyncio.to_thread(
-                extract_search_keywords, user_question, kw_context
+            query_route = await asyncio.to_thread(
+                resolve_query_route,
+                user_question,
+                conversation_context=kw_context,
             )
+            metric_data["query_route_mode"] = query_route.mode
+            metric_data["query_route_source"] = query_route.source
+            metric_data["query_route_confidence"] = query_route.confidence
+
+            if query_route.confidence >= 0.85 and query_route.search_keywords:
+                search_keywords = query_route.search_keywords
+            else:
+                if (
+                    needs_query_expansion(user_question)
+                    and not stock_browse
+                    and not budget_browse
+                ):
+                    messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
+                search_keywords = await asyncio.to_thread(
+                    extract_search_keywords, user_question, kw_context
+                )
+                search_keywords = apply_route_to_keywords(query_route, search_keywords)
+            budget_browse = budget_browse or query_route.mode == "budget_browse"
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         stock_browse = is_stock_status_browse_query(user_question)
         budget_browse = is_budget_browse_query(user_question)
@@ -1277,8 +1318,6 @@ def _persist_feedback_async(
         desc_parts.append(f"Câu hỏi: {question}")
     if product_url:
         desc_parts.append(f"Link SP: {product_url}")
-    if user_comment:
-        desc_parts.append(f"Ý kiến: {user_comment}")
     description = "\n".join(desc_parts)
     rating_label = "👍 Hữu ích" if rating == FEEDBACK_HELPFUL else "👎 Không hữu ích"
     content = save_result.content if save_result else (user_comment or rating_label)

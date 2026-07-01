@@ -93,6 +93,7 @@ _PRODUCT_LINE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bt[ủu] l[ạa]nh\b", re.I), "appliance_fridge"),
     (re.compile(r"\bm[áa]y gi[ạa]t\b", re.I), "appliance_washer"),
     (re.compile(r"\brobot\s+h[úu]t\b|\bm[áa]y h[úu]t\b", re.I), "appliance_vacuum"),
+    (re.compile(r"\bquat\b|\bquạt\b", re.I), "cat_fan"),
 )
 
 # Nhóm tương thích — cùng nhóm không conflict (iphone + iphone_air vẫn khác line → conflict)
@@ -242,6 +243,7 @@ _PRODUCT_LINE_HINTS = frozenset({
     "playstation", "ps5", "xbox", "nintendo", "switch",
     "pin dự phòng", "pin du phong", "tai nghe", "loa", "smartwatch",
     "laptop", "tablet", "nồi chiên", "noi chien", "máy lạnh", "may lanh",
+    "quạt", "quat",
 })
 
 
@@ -323,12 +325,7 @@ def product_context_conflict(text_a: str, text_b: str) -> bool:
     if lines_a and lines_b and not (lines_a & lines_b):
         return True
 
-    if (
-        sig_a.categories
-        and sig_b.categories
-        and not (sig_a.categories & sig_b.categories)
-        and _query_introduces_product_subject(text_a)
-    ):
+    if sig_a.categories and sig_b.categories and not (sig_a.categories & sig_b.categories):
         return True
 
     return False

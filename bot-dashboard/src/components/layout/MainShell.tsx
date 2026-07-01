@@ -5,8 +5,9 @@ import { usePathname } from "next/navigation";
 export function MainShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const isLogin = path === "/login";
+  const isChat = path.startsWith("/chat");
 
-  if (isLogin) {
+  if (isLogin || isChat) {
     return <>{children}</>;
   }
 

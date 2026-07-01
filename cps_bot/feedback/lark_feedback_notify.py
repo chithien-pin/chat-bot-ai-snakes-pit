@@ -78,11 +78,9 @@ def build_admin_feedback_card(
     body = (
         f"{at_user} đã gửi một đánh giá cho bạn như sau:\n"
         f"- **Nội dung:** {content or '—'}\n"
-        f"- **Mô tả chi tiết:** {description or '—'}\n"
+        f"- **Mô tả chi tiết:** \n{description or '—'}\n"
         f"- **Thời gian:** {when}"
     )
-    if topic_link:
-        body += f"\n- **Topic:** [Mở hội thoại]({topic_link})"
 
     actions: list[dict[str, Any]] = []
     contact_url = build_lark_contact_link(reviewer_open_id)
@@ -95,11 +93,20 @@ def build_admin_feedback_card(
                 "url": contact_url,
             }
         )
+    if topic_link:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Mở hội thoại"},
+                "type": "default",
+                "url": topic_link,
+            }
+        )
     if base_record_url:
         actions.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "Xem chi tiết"},
+                "text": {"tag": "plain_text", "content": "Mở dashboard"},
                 "type": "primary",
                 "url": base_record_url,
             }

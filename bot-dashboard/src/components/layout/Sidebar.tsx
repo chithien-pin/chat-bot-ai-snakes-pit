@@ -29,7 +29,7 @@ export function Sidebar() {
   const path = usePathname();
   const router = useRouter();
 
-  if (path === "/login") {
+  if (path === "/login" || path.startsWith("/chat")) {
     return null;
   }
 
