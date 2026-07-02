@@ -3,6 +3,7 @@ Client GraphQL CellphoneS (CPS) — resolve URL → product_id → chi tiết s�
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from html import unescape
@@ -3979,57 +3980,78 @@ async def _enrich_payload_for_scenarios_inner(
         else resolve_province_from_text(user_question) or CPS_PROVINCE_ID
     )
 
-    if not unavailable and (scenarios.get("trade_in") or scenarios.get("price_promotion")):
+    async def _fetch_trade_promo_task() -> tuple[str, Any] | None:
+        if unavailable or not (
+            scenarios.get("trade_in") or scenarios.get("price_promotion")
+        ):
+            return None
         trade = await fetch_trade_promo_for_product(detail, province_id=pid)
-        if trade:
-            payload["trade_promo"] = trade
-            fetched["trade_promo"] = True
+        return ("trade_promo", trade) if trade else None
 
-    if scenarios.get("warranty"):
+    async def _fetch_warranty_task() -> tuple[str, Any] | None:
+        if not scenarios.get("warranty"):
+            return None
         warranty = await fetch_extended_warranty_for_product(detail)
-        if warranty:
-            payload["extended_warranty"] = warranty
-            fetched["extended_warranty"] = True
+        return ("extended_warranty", warranty) if warranty else None
 
-    if not unavailable and scenarios.get("shop_stock") and detail.get("product_id"):
+    async def _fetch_instock_other_task() -> tuple[str, Any] | None:
+        if unavailable or not scenarios.get("shop_stock") or not detail.get("product_id"):
+            return None
         other = await fetch_instock_other_provinces(
             detail["product_id"],
             province_id=pid,
         )
-        if other:
-            payload["instock_other_provinces"] = other
-            fetched["instock_other_provinces"] = True
+        return ("instock_other_provinces", other) if other else None
 
-    if scenarios.get("installment"):
+    async def _fetch_installment_task() -> tuple[str, Any] | None:
+        if not scenarios.get("installment"):
+            return None
         from cps_bot.cps.cps_installment import fetch_installment_context
 
         installment_ctx = await fetch_installment_context(
             detail,
             user_question=user_question,
         )
-        if installment_ctx:
-            payload["installment"] = installment_ctx
-            fetched["installment"] = True
+        return ("installment", installment_ctx) if installment_ctx else None
 
-    if (
-        scenarios.get("color_variants")
-        or is_color_variant_list_query(user_question)
-    ) and detail.get("product_id"):
+    async def _fetch_color_variants_task() -> tuple[str, Any] | None:
+        if not (
+            scenarios.get("color_variants")
+            or is_color_variant_list_query(user_question)
+        ) or not detail.get("product_id"):
+            return None
         color_ctx = await fetch_color_sibling_variants(detail, province_id=pid)
-        if color_ctx:
-            payload["color_sibling_variants"] = color_ctx
-            fetched["color_sibling_variants"] = True
+        return ("color_sibling_variants", color_ctx) if color_ctx else None
 
-    if scenarios.get("store_locator"):
+    async def _fetch_store_locator_task() -> tuple[str, Any] | None:
+        if not scenarios.get("store_locator"):
+            return None
         from cps_bot.cps.cps_store import fetch_store_locator_context
 
         store_ctx = await fetch_store_locator_context(
             user_question,
             province_id=pid,
         )
-        if store_ctx:
-            payload["store_locator"] = store_ctx
-            fetched["store_locator"] = True
+        return ("store_locator", store_ctx) if store_ctx else None
+
+    parallel_results = await asyncio.gather(
+        _fetch_trade_promo_task(),
+        _fetch_warranty_task(),
+        _fetch_instock_other_task(),
+        _fetch_installment_task(),
+        _fetch_color_variants_task(),
+        _fetch_store_locator_task(),
+        return_exceptions=True,
+    )
+    for item in parallel_results:
+        if isinstance(item, Exception):
+            logger.warning("enrich parallel fetch lỗi: %s", item)
+            continue
+        if not item:
+            continue
+        key, value = item
+        payload[key] = value
+        fetched[key] = True
 
     from cps_bot.cps.cps_enrich import enrich_extended_scenarios
 

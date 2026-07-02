@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from cps_bot.core.chat_help import CHAT_HELP_SHORT
 from cps_bot.cps.cps_api import (
     classify_question_scenarios,
     extract_cellphones_urls,
@@ -138,15 +139,7 @@ _GREETING_REPLY = (
     "• So sánh iPhone 16 Pro Max và S25 Ultra"
 )
 
-_HELP_REPLY = (
-    "📖 Mình hỗ trợ tra cứu và tư vấn sản phẩm trên cellphones.com.vn:\n\n"
-    "• Giá & khuyến mãi (Smember, HSSV, voucher)\n"
-    "• Tồn cửa hàng / shop gần bạn\n"
-    "• Thu cũ đổi mới, trả góp, bảo hành\n"
-    "• So sánh 2 sản phẩm, thông số kỹ thuật\n\n"
-    "Gửi tên sản phẩm hoặc câu hỏi cụ thể — mình sẽ tra dữ liệu thật trên website.\n"
-    "Gõ /help để xem thêm."
-)
+_HELP_REPLY = CHAT_HELP_SHORT
 
 _OFF_TOPIC_REPLY = (
     "Mình chỉ hỗ trợ tư vấn sản phẩm công nghệ trên CellphoneS "

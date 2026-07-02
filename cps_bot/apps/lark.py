@@ -47,6 +47,7 @@ from config import (
     LARK_THREAD_AUTO_REPLY,
     LARK_BOT_MENTION_NAMES,
 )
+from cps_bot.core.chat_help import chat_help_plain
 from cps_bot.feedback.feedback import (
     FEEDBACK_HELPFUL,
     build_lark_card_action_response,
@@ -144,18 +145,6 @@ WELCOME_TEXT = (
     "• So sánh S26 Ultra và S25 Ultra\n\n"
     "Trong topic: @bot lần đầu, các câu tiếp theo không cần @.\n"
     "Gõ /help để xem hướng dẫn."
-)
-HELP_TEXT = (
-    "📖 Hướng dẫn sử dụng\n\n"
-    "1️⃣ Gửi câu hỏi về sản phẩm công nghệ (tiếng Việt).\n"
-    "2️⃣ Bot tìm trên cellphones.com.vn và phân tích.\n"
-    "3️⃣ Nhận câu trả lời kèm link sản phẩm gốc.\n\n"
-    "Lệnh: /start · /help · /clear · /chatid\n\n"
-    "Trong topic Lark: @bot một lần, hỏi tiếp không cần @ lại.\n\n"
-    "Bot hỗ trợ: giá & KM (Smember/HSSV), tồn cửa hàng, thu cũ đổi mới, "
-    "trả góp, bảo hành, so sánh 2 SP, thông số & tư vấn chọn mua.\n\n"
-    "💡 Bot nhớ ngữ cảnh vài tin gần nhất.\n\n"
-    "⚠️ Giá và tồn kho có thể thay đổi theo thời gian thực trên website."
 )
 
 _sessions: dict[str, Any] = load_session_store()
@@ -651,7 +640,7 @@ async def _cmd_help(messenger: LarkMessenger, chat_id: str) -> None:
             "Gõ /chatid để lấy ID đúng, cập nhật `.env`, rồi chạy lại `python lark_bot.py`."
         )
         return
-    messenger.reply(HELP_TEXT)
+    messenger.reply(chat_help_plain(lark=True))
 
 
 async def _cmd_clear(

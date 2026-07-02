@@ -42,6 +42,7 @@ from cps_bot.cps.cps_api import (
     should_attach_shop_stock,
 )
 from cps_bot.core.api_trace import api_trace_scope, trace_phase
+from cps_bot.core.chat_help import chat_help_telegram
 from cps_bot.core.conversation import (
     append_turn,
     clear_session,
@@ -117,23 +118,6 @@ WELCOME_TEXT = (
     "• _Trả góp Home Credit iPhone 16 trả trước thấp nhất?_\n"
     "• _So sánh S26 Ultra và S25 Ultra_\n\n"
     "Gõ /help để xem hướng dẫn."
-)
-HELP_TEXT = (
-    "📖 *Hướng dẫn sử dụng*\n\n"
-    "1️⃣ Gửi câu hỏi về sản phẩm công nghệ (tiếng Việt).\n"
-    "2️⃣ Bot tìm trên cellphones.com.vn và phân tích.\n"
-    "3️⃣ Nhận câu trả lời kèm link sản phẩm gốc.\n\n"
-    "*Lệnh:* /start · /help · /clear\n\n"
-    "*Bot hỗ trợ các kịch bản:*\n"
-    "💰 Giá & KM (Smember, HSSV, voucher)\n"
-    "🏪 Tồn cửa hàng / shop gần địa chỉ\n"
-    "♻️ Thu cũ đổi mới / trợ giá trade\\-in\n"
-    "💳 Trả góp \\(thông tin từ trang SP\\)\n"
-    "🛡 Bảo hành & gói BH mở rộng\n"
-    "⚖️ So sánh 2 sản phẩm\n"
-    "📋 Thông số kỹ thuật / tư vấn chọn mua\n\n"
-    "💡 Bot nhớ ngữ cảnh vài tin gần nhất \\(vd: _còn hàng không?_\\).\n\n"
-    "⚠️ Giá, tồn kho, trả góp chi tiết có thể thay đổi — xem thêm trên website."
 )
 
 
@@ -246,7 +230,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     await update.message.reply_text(
-        HELP_TEXT,
+        chat_help_telegram(),
         parse_mode=ParseMode.MARKDOWN,
     )
 

@@ -73,6 +73,7 @@ from cps_bot.llm.gemini_client import (
 )
 from cps_bot.llm.message_intent import is_social_message, resolve_message_intent
 from cps_bot.llm.query_router import apply_route_to_keywords, resolve_query_route
+from cps_bot.llm.answer_guard import check_answer_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,8 @@ async def process_chat_message(
             metric_data["query_route_mode"] = query_route.mode
             metric_data["query_route_source"] = query_route.source
             metric_data["query_route_confidence"] = query_route.confidence
+            if query_route.confidence < 0.85:
+                metric_data["low_confidence_route"] = True
 
             if query_route.confidence >= 0.85 and query_route.search_keywords:
                 search_keywords = query_route.search_keywords
@@ -470,8 +473,8 @@ async def process_chat_message(
                 search_keywords=search_keywords,
             )
 
-        shop_ctx = None
-        if (
+        browse_list = is_browse_list_mode(detail)
+        need_shop_stock = bool(
             detail.get("product_id")
             and not detail.get("stock_browse_list_mode")
             and not detail.get("budget_browse_list_mode")
@@ -480,33 +483,69 @@ async def process_chat_message(
                 resume=resume_shop_stock,
                 reuse_product_context=reuse_product_context,
             )
-        ):
-            metric_data["shop_stock_trigger"] = True
-            await _emit_status(on_status, "🏪 Đang kiểm tra tồn cửa hàng...")
+        )
+        need_enrich = not browse_list
+
+        async def _run_shop_stock() -> tuple[Any, int]:
+            t0 = time.perf_counter()
             async with api_trace_scope(metric_data):
                 with trace_phase("shop_stock"):
-                    shop_ctx = await attach_shop_stock_to_payload(
+                    ctx = await attach_shop_stock_to_payload(
                         payload,
                         detail,
                         user_question=shop_question,
                         province_id=query_province_id,
                     )
-        if shop_ctx:
-            metric_data["shop_stock_scenario"] = True
-            metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
+            return ctx, int((time.perf_counter() - t0) * 1000)
 
-        browse_list = is_browse_list_mode(detail)
-        scenario_flags: dict[str, bool] = {}
-        if not browse_list:
-            scenario_flags = await enrich_payload_for_scenarios(
+        async def _run_enrich() -> tuple[dict[str, bool], int]:
+            t0 = time.perf_counter()
+            flags = await enrich_payload_for_scenarios(
                 payload,
                 detail,
                 user_question=shop_question,
                 province_id=query_province_id,
                 api_trace_stats=metric_data,
             )
-            if scenario_flags:
-                metric_data["scenario_enrich"] = scenario_flags
+            return flags, int((time.perf_counter() - t0) * 1000)
+
+        shop_ctx = None
+        scenario_flags: dict[str, bool] = {}
+        if need_shop_stock and need_enrich:
+            metric_data["shop_stock_trigger"] = True
+            await _emit_status(
+                on_status,
+                "🏪 Đang kiểm tra tồn cửa hàng và dữ liệu bổ sung...",
+            )
+            shop_result, enrich_result = await asyncio.gather(
+                _run_shop_stock(),
+                _run_enrich(),
+                return_exceptions=True,
+            )
+            if isinstance(shop_result, Exception):
+                logger.warning("shop_stock parallel lỗi: %s", shop_result)
+            else:
+                shop_ctx, shop_ms = shop_result
+                metric_data["latency_shop_stock_ms"] = shop_ms
+            if isinstance(enrich_result, Exception):
+                logger.warning("enrich parallel lỗi: %s", enrich_result)
+            else:
+                scenario_flags, enrich_ms = enrich_result
+                metric_data["latency_enrich_ms"] = enrich_ms
+        elif need_shop_stock:
+            metric_data["shop_stock_trigger"] = True
+            await _emit_status(on_status, "🏪 Đang kiểm tra tồn cửa hàng...")
+            shop_ctx, shop_ms = await _run_shop_stock()
+            metric_data["latency_shop_stock_ms"] = shop_ms
+        elif need_enrich:
+            scenario_flags, enrich_ms = await _run_enrich()
+            metric_data["latency_enrich_ms"] = enrich_ms
+
+        if shop_ctx:
+            metric_data["shop_stock_scenario"] = True
+            metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
+        if scenario_flags:
+            metric_data["scenario_enrich"] = scenario_flags
 
         t2 = time.perf_counter()
         gemini_meta: dict[str, Any] = {}
@@ -552,6 +591,16 @@ async def process_chat_message(
                     "completion_tokens": int(gemini_meta.get("completion_tokens", 0) or 0),
                     "total_tokens": int(gemini_meta.get("total_tokens", 0) or 0),
                 }
+            )
+
+        price_mismatches = check_answer_numbers(answer, payload)
+        if price_mismatches:
+            metric_data["price_mismatch_detected"] = True
+            metric_data["price_mismatch_numbers"] = price_mismatches
+            logger.warning(
+                "Price mismatch in answer (log-only): %s question=%r",
+                price_mismatches,
+                user_question[:120],
             )
 
         answer = truncate_reply(answer)

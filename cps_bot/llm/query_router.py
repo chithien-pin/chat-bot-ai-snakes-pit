@@ -12,6 +12,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from cps_bot.browse.budget_browse import is_budget_browse_query, parse_budget_constraint
@@ -23,6 +25,11 @@ from cps_bot.browse.category_filter_browse import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LOW_CONFIDENCE_THRESHOLD = 0.85
+_LOW_CONFIDENCE_LOG_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "var" / "low_confidence_route.log"
+)
 
 _QUERY_ROUTE_PROMPT = """Bạn là router tra cứu CellphoneS. Phân tích câu hỏi và trả JSON thuần (không markdown).
 
@@ -244,6 +251,33 @@ def _merge_routes(rule: QueryRoute, llm: QueryRoute) -> QueryRoute:
     )
 
 
+def log_low_confidence_route(text: str, route: QueryRoute) -> None:
+    """Ghi route mơ hồ để đội ngũ bổ sung rule — không đổi hành vi routing."""
+    if route.confidence >= _LOW_CONFIDENCE_THRESHOLD:
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "query": (text or "").strip()[:500],
+        "mode": route.mode,
+        "source": route.source,
+        "confidence": route.confidence,
+        "search_keywords": (route.search_keywords or "")[:200],
+    }
+    try:
+        _LOW_CONFIDENCE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _LOW_CONFIDENCE_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.warning("Không ghi được low_confidence_route.log: %s", exc)
+    logger.info(
+        "Low-confidence route: %r mode=%s conf=%.2f source=%s",
+        (text or "")[:80],
+        route.mode,
+        route.confidence,
+        route.source,
+    )
+
+
 def resolve_query_route(
     text: str,
     *,
@@ -264,7 +298,9 @@ def resolve_query_route(
 
     should_llm = LLM_QUERY_ROUTER if use_llm is None else use_llm
     if not should_llm:
-        return rule if rule.confidence > 0 else QueryRoute(mode="auto", source="rule")
+        result = rule if rule.confidence > 0 else QueryRoute(mode="auto", source="rule")
+        log_low_confidence_route(original, result)
+        return result
 
     try:
         llm = _llm_route(original)
@@ -273,9 +309,13 @@ def resolve_query_route(
         llm = None
 
     if llm is None:
-        return rule if rule.confidence > 0 else QueryRoute(mode="auto", source="rule")
+        result = rule if rule.confidence > 0 else QueryRoute(mode="auto", source="rule")
+        log_low_confidence_route(original, result)
+        return result
 
-    return _merge_routes(rule, llm)
+    merged = _merge_routes(rule, llm)
+    log_low_confidence_route(original, merged)
+    return merged
 
 
 def apply_route_to_keywords(route: QueryRoute, fallback_keywords: str) -> str:

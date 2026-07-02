@@ -162,6 +162,25 @@ def test_hsbc_visa_follow_up_reuses_xiaomi_context() -> None:
     assert "xiaomi" in kw.lower() or "17t" in kw.lower(), f"keyword phải giữ SP session: {kw!r}"
 
 
+def test_history_notes_preserved_after_many_turns() -> None:
+    from cps_bot.core.conversation import append_turn, format_context_block
+
+    session: dict = {"turns": [], "last_product": None, "last_keywords": "", "history_notes": []}
+    for i in range(8):
+        append_turn(
+            session,
+            user=f"câu hỏi số {i} về iphone",
+            assistant=f"trả lời {i}",
+            keywords="iPhone 16 Pro Max" if i >= 5 else "",
+            product_name="iPhone 16 Pro Max" if i == 7 else "",
+        )
+    assert len(session["turns"]) == 6
+    assert len(session.get("history_notes") or []) >= 2
+    ctx = format_context_block(session)
+    assert "LỊCH SỬ TRƯỚC ĐÓ" in ctx
+    assert "câu hỏi số 0" in ctx or "câu hỏi số 1" in ctx
+
+
 def test_affirmative_follow_up_co_tu_van_di() -> None:
     from cps_bot.llm.gemini_client import (
         extract_search_keywords,

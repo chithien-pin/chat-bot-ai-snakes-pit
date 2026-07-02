@@ -14,11 +14,14 @@ logger = logging.getLogger(__name__)
 
 MAX_TURNS = 6
 MAX_ASSISTANT_CHARS = 400
+MAX_HISTORY_NOTES = 10
+MAX_HISTORY_NOTES_CHARS = 600
 
 _EMPTY_SESSION: dict[str, Any] = {
     "turns": [],
     "last_product": None,
     "last_keywords": "",
+    "history_notes": [],
     "updated_at": 0.0,
 }
 
@@ -28,6 +31,7 @@ def _fresh_session() -> dict[str, Any]:
         "turns": [],
         "last_product": None,
         "last_keywords": "",
+        "history_notes": [],
         "updated_at": time.time(),
     }
 
@@ -162,6 +166,8 @@ def mirror_session_to_chat_level(
         chat_sess["last_product"] = dict(product)
     merged = (chat_sess.get("turns") or []) + (source.get("turns") or [])
     chat_sess["turns"] = merged[-MAX_TURNS:]
+    merged_notes = (chat_sess.get("history_notes") or []) + (source.get("history_notes") or [])
+    chat_sess["history_notes"] = merged_notes[-MAX_HISTORY_NOTES:]
 
 
 def get_session(
@@ -195,6 +201,46 @@ def clear_session(
     delete_persisted_session(key)
 
 
+def _summarize_turn_for_history(
+    turn: dict[str, Any],
+    *,
+    keywords: str = "",
+    product_name: str = "",
+) -> str:
+    user = (turn.get("user") or "").strip()[:80]
+    note = f"Khách từng hỏi: {user}"
+    turn_kw = (turn.get("keywords") or keywords or "").strip()
+    if turn_kw:
+        note += f" (từ khóa: {turn_kw[:60]})"
+    elif product_name:
+        note += f" (SP: {product_name[:60]})"
+    return note
+
+
+def _append_history_notes(
+    session: dict[str, Any],
+    dropped_turns: list[dict[str, Any]],
+    *,
+    keywords: str = "",
+    product_name: str = "",
+) -> None:
+    if not dropped_turns:
+        return
+    notes: list[str] = list(session.get("history_notes") or [])
+    for turn in dropped_turns:
+        notes.append(
+            _summarize_turn_for_history(
+                turn,
+                keywords=keywords,
+                product_name=product_name,
+            )
+        )
+    notes = notes[-MAX_HISTORY_NOTES:]
+    while notes and sum(len(n) for n in notes) > MAX_HISTORY_NOTES_CHARS:
+        notes.pop(0)
+    session["history_notes"] = notes
+
+
 def append_turn(
     session: dict[str, Any],
     *,
@@ -214,6 +260,14 @@ def append_turn(
             "keywords": keywords,
         }
     )
+    if len(session["turns"]) > MAX_TURNS:
+        dropped = session["turns"][:-MAX_TURNS]
+        _append_history_notes(
+            session,
+            dropped,
+            keywords=keywords,
+            product_name=product_name,
+        )
     session["turns"] = session["turns"][-MAX_TURNS:]
     touch_session(session)
     if keywords:
@@ -240,6 +294,11 @@ def format_context_block(session: dict[str, Any]) -> str:
         parts.append(f"Sản phẩm đang thảo luận: {product['name']}")
     if session.get("last_keywords"):
         parts.append(f"Từ khóa tìm gần nhất: {session['last_keywords']}")
+
+    history_notes = session.get("history_notes") or []
+    if history_notes:
+        parts.append("=== LỊCH SỬ TRƯỚC ĐÓ (tóm tắt) ===")
+        parts.extend(history_notes)
 
     for turn in session.get("turns", [])[-4:]:
         parts.append(f"Khách: {turn['user']}")

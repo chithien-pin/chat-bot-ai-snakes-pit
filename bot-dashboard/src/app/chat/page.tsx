@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Trash2, LogOut } from "lucide-react";
+import { ArrowUp, CreditCard, Gift, Palette, Scale, Store, Trash2, LogOut, Tag } from "lucide-react";
 
 import { clearChatSession, sendChatFeedback, sendChatMessage } from "@/lib/api";
 import {
@@ -11,6 +11,7 @@ import {
   setChatDisplayName,
 } from "@/lib/chat-auth";
 import { ChatNameLogin } from "@/components/chat/ChatNameLogin";
+import { ChatHelpModal } from "@/components/chat/ChatHelpModal";
 
 const SESSION_KEY = "cps_web_chat_session";
 
@@ -34,18 +35,28 @@ const STARTER_PROMPTS = [
   {
     title: "Tồn cửa hàng",
     desc: "Shop còn hàng theo màu/dung lượng",
-    prompt: "Shop còn iPhone 16 Pro 256GB màu titan không?",
+    prompt: "Shop còn iPhone 17 Pro Max 256GB màu titan không?",
   },
   {
     title: "Trả góp Techcombank",
     desc: "Kỳ hạn, thẻ Visa, phí chuyển đổi",
-    prompt: "Trả góp Techcombank iPhone 16 6 tháng thẻ Visa",
+    prompt: "Trả góp Techcombank iPhone 17 256gb 6 tháng thẻ Visa",
   },
   {
     title: "So sánh 2 sản phẩm",
     desc: "Camera, pin, giá, ưu đãi",
-    prompt: "So sánh iPhone 16 Pro Max và Galaxy S25 Ultra",
+    prompt: "So sánh iPhone 17 Pro Max và Galaxy S26 Ultra",
   },
+];
+
+/** Chip gợi ý hỏi tiếp — hiển thị phía trên input khi đang trong hội thoại. */
+const FOLLOW_UP_CHIPS = [
+  { label: "Còn hàng shop", prompt: "Shop còn hàng không?", icon: Store },
+  { label: "Giá Smember", prompt: "Giá Smember bao nhiêu?", icon: Tag },
+  { label: "Trả góp", prompt: "Trả góp được không?", icon: CreditCard },
+  { label: "Khuyến mãi", prompt: "Có khuyến mãi gì không?", icon: Gift },
+  { label: "Màu khác", prompt: "Còn màu nào khác?", icon: Palette },
+  { label: "So sánh SP", prompt: "So sánh với sản phẩm tương tự", icon: Scale },
 ];
 
 function randomId(): string {
@@ -79,6 +90,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const sessionId = useRef("default");
   const userId = useRef("");
@@ -171,6 +183,18 @@ export default function ChatPage() {
     [loading, displayName],
   );
 
+  const handleSuggestionClick = (prompt: string) => {
+    if (loading) return;
+    setInput(prompt);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const el = textareaRef.current;
+      if (el) {
+        el.selectionStart = el.selectionEnd = prompt.length;
+      }
+    });
+  };
+
   const handleSubmit = (e?: { preventDefault?: () => void }) => {
     e?.preventDefault?.();
     if (input.trim()) void submitMessage(input);
@@ -221,6 +245,22 @@ export default function ChatPage() {
 
   return (
     <div className="chat-shell">
+      <button
+        type="button"
+        className="chat-help-fab"
+        onClick={() => setHelpOpen(true)}
+        aria-label="Hướng dẫn cách chat"
+        title="Hướng dẫn cách chat"
+      >
+        ?
+      </button>
+
+      <ChatHelpModal
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        onTryExample={handleSuggestionClick}
+      />
+
       <header className="chat-header">
         <div>
           <div className="chat-header-title">CellphoneS AI</div>
@@ -250,7 +290,7 @@ export default function ChatPage() {
                   key={item.title}
                   type="button"
                   className="chat-suggestion"
-                  onClick={() => void submitMessage(item.prompt)}
+                  onClick={() => handleSuggestionClick(item.prompt)}
                 >
                   <div className="chat-suggestion-title">{item.title}</div>
                   <div className="chat-suggestion-desc">{item.desc}</div>
@@ -333,6 +373,25 @@ export default function ChatPage() {
       </div>
 
       <div className="chat-composer-wrap">
+        {hasThread && (
+          <div className="chat-quick-chips" role="group" aria-label="Gợi ý câu hỏi nhanh">
+            {FOLLOW_UP_CHIPS.map((chip) => {
+              const Icon = chip.icon;
+              return (
+                <button
+                  key={chip.label}
+                  type="button"
+                  className="chat-quick-chip"
+                  disabled={loading}
+                  onClick={() => handleSuggestionClick(chip.prompt)}
+                >
+                  <Icon size={14} aria-hidden />
+                  {chip.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <form
           className="chat-composer-box"
           onSubmit={(e) => {

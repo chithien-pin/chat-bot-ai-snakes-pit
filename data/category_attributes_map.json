@@ -1,6 +1,6 @@
 {
-  "updated_at": "2026-07-01T00:00:00.149394+00:00",
-  "category_count": 345,
+  "updated_at": "2026-07-02T00:00:07.300925+00:00",
+  "category_count": 347,
   "processed_ids": [
     "1000",
     "1001",
@@ -56,6 +56,7 @@
     "1268",
     "1276",
     "1277",
+    "1278",
     "1280",
     "1282",
     "1291",
@@ -222,6 +223,7 @@
     "2694",
     "2715",
     "2716",
+    "2720",
     "2722",
     "2744",
     "2745",
@@ -1403,6 +1405,12 @@
     ],
     "2642": [
       "Airpods cũ"
+    ],
+    "1278": [
+      "KBVision"
+    ],
+    "2720": [
+      "AKASO"
     ]
   },
   "categories": {
@@ -133498,6 +133506,194 @@
       ],
       "menu_names": [
         "Arm màn hình"
+      ]
+    },
+    "1278": {
+      "id": "1278",
+      "name": "KBVision",
+      "parent_id": "667",
+      "uri": "kbvision",
+      "path": "1/2/30/363/667/1278",
+      "max_price": 920000,
+      "min_price": 520000,
+      "attribute_count": 4,
+      "attributes": [
+        {
+          "key": "cam_an_dong",
+          "label": "Dòng camera",
+          "label_norm": "dong camera",
+          "options": [
+            {
+              "label": "Camera trong nhà",
+              "nice_uri": "camera-trong-nha",
+              "label_norm": "camera trong nha",
+              "tokens": [
+                "camera",
+                "nha",
+                "trong"
+              ]
+            },
+            {
+              "label": "Camera ngoài trời",
+              "nice_uri": "camera-ngoai-troi",
+              "label_norm": "camera ngoai troi",
+              "tokens": [
+                "camera",
+                "ngoai",
+                "troi"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "cam_an_phan_giai_filter",
+          "label": "Độ phân giải",
+          "label_norm": "đo phan giai",
+          "options": [
+            {
+              "label": "4MP",
+              "nice_uri": "4mp",
+              "label_norm": "4mp",
+              "tokens": [
+                "4mp"
+              ]
+            },
+            {
+              "label": "5MP",
+              "nice_uri": "5mp",
+              "label_norm": "5mp",
+              "tokens": [
+                "5mp"
+              ]
+            },
+            {
+              "label": "2MP",
+              "nice_uri": "2mp",
+              "label_norm": "2mp",
+              "tokens": [
+                "2mp"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "cam_an_tien_ich_filter",
+          "label": "Tính năng",
+          "label_norm": "tinh nang",
+          "options": [
+            {
+              "label": "Gửi cảnh báo đến điện thoại",
+              "nice_uri": "gui-canh-bao-den-dien-thoai",
+              "label_norm": "gui canh bao đen đien thoai",
+              "tokens": [
+                "bao",
+                "canh",
+                "den",
+                "gui",
+                "đen",
+                "đien"
+              ]
+            },
+            {
+              "label": "Đàm thoại 2 chiều",
+              "nice_uri": "dam-thoai-2-chieu",
+              "label_norm": "đam thoai 2 chieu",
+              "tokens": [
+                "chieu",
+                "dam",
+                "đam"
+              ]
+            },
+            {
+              "label": "Báo chuyển động",
+              "nice_uri": "bao-chuyen-dong",
+              "label_norm": "bao chuyen đong",
+              "tokens": [
+                "bao",
+                "chuyen",
+                "dong",
+                "đong"
+              ]
+            },
+            {
+              "label": "Nhận diện con người",
+              "nice_uri": "nhan-dien-con-nguoi",
+              "label_norm": "nhan dien con nguoi",
+              "tokens": [
+                "con",
+                "nguoi",
+                "nhan"
+              ]
+            },
+            {
+              "label": "Theo dõi chuyển động",
+              "nice_uri": "theo-doi-chuyen-dong",
+              "label_norm": "theo doi chuyen đong",
+              "tokens": [
+                "chuyen",
+                "doi",
+                "dong",
+                "theo",
+                "đong"
+              ]
+            },
+            {
+              "label": "Quan sát ban đêm có màu sắc",
+              "nice_uri": "quan-sat-ban-dem-co-mau-sac",
+              "label_norm": "quan sat ban đem co mau sac",
+              "tokens": [
+                "ban",
+                "dem",
+                "mau",
+                "quan",
+                "sac",
+                "sat",
+                "đem"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "cam_an_clhanh",
+          "label": "Chất lượng hình ảnh",
+          "label_norm": "chat luong hinh anh",
+          "options": [
+            {
+              "label": "2K",
+              "nice_uri": "2k",
+              "label_norm": "2k",
+              "tokens": [
+                "2k"
+              ]
+            },
+            {
+              "label": "Full HD",
+              "nice_uri": "full-hd",
+              "label_norm": "full hd",
+              "tokens": [
+                "full",
+                "hd"
+              ]
+            }
+          ]
+        }
+      ],
+      "menu_names": [
+        "KBVision"
+      ]
+    },
+    "2720": {
+      "id": "2720",
+      "name": "Akaso",
+      "parent_id": "666",
+      "uri": "akaso",
+      "path": "1/2/30/363/666/2720",
+      "max_price": 8190000.0,
+      "min_price": 4790000.0,
+      "attribute_count": 0,
+      "attributes": [],
+      "menu_names": [
+        "AKASO"
       ]
     }
   },

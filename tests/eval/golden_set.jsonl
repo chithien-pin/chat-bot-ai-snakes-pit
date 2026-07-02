@@ -1,0 +1,40 @@
+{"id": "price_01", "scenario": "price", "question": "Giá iPhone 16 Pro Max 256GB hôm nay bao nhiêu?", "context": "", "expected_facts": ["giá", "iPhone 16 Pro Max", "256GB"]}
+{"id": "price_02", "scenario": "price", "question": "Check giá Samsung Galaxy S24 Ultra 512GB", "context": "", "expected_facts": ["giá", "S24 Ultra", "512GB"]}
+{"id": "price_03", "scenario": "price_promotion", "question": "SVIP mua iPhone 17 Pro Max 256 còn bao nhiêu", "context": "", "expected_facts": ["giá", "Smember hoặc SVIP hoặc hạng thành viên", "iPhone 17"]}
+{"id": "price_04", "scenario": "price_promotion", "question": "Macbook Air M2 có ưu đãi HSSV không", "context": "", "expected_facts": ["MacBook", "HSSV hoặc học sinh sinh viên"]}
+{"id": "stock_01", "scenario": "shop_stock", "question": "Shop còn iPhone 16 Plus 256 màu hồng không", "context": "", "expected_facts": ["tồn hoặc còn hàng hoặc hết hàng", "iPhone 16 Plus"]}
+{"id": "stock_02", "scenario": "stock_status", "question": "Sony WH-1000XM5 còn hàng không", "context": "", "expected_facts": ["Sony", "tồn hoặc trạng thái hàng"]}
+{"id": "stock_03", "scenario": "color_variants", "question": "iPhone 17 Pro Max còn tồn những màu nào", "context": "", "expected_facts": ["màu", "iPhone 17 Pro Max"]}
+{"id": "installment_01", "scenario": "installment", "question": "iPhone 16 128GB trả góp Home Credit được không", "context": "", "expected_facts": ["trả góp", "Home Credit hoặc CTTC", "iPhone 16"]}
+{"id": "installment_02", "scenario": "installment", "question": "Trả góp thẻ Techcombank 6 tháng iPhone 17", "context": "", "expected_facts": ["trả góp", "Techcombank", "6 tháng"]}
+{"id": "installment_03", "scenario": "installment", "question": "Xiaomi 17T trả góp Kredivo được không", "context": "", "expected_facts": ["trả góp", "Kredivo hoặc mua trước trả sau", "Xiaomi"]}
+{"id": "warranty_01", "scenario": "warranty", "question": "iPhone 16 Pro Max bảo hành bao lâu", "context": "", "expected_facts": ["bảo hành", "iPhone 16 Pro Max"]}
+{"id": "warranty_02", "scenario": "warranty", "question": "MacBook Pro M5 có gói bảo hành VIP không", "context": "", "expected_facts": ["bảo hành", "MacBook"]}
+{"id": "compare_01", "scenario": "compare", "question": "So sánh iPhone 16 Pro Max và Samsung S25 Ultra", "context": "", "expected_facts": ["so sánh", "iPhone 16 Pro Max", "S25 Ultra"]}
+{"id": "compare_02", "scenario": "compare", "question": "Nên mua MacBook Air M4 hay MacBook Pro M4", "context": "", "expected_facts": ["MacBook Air", "MacBook Pro", "gợi ý hoặc so sánh"]}
+{"id": "budget_01", "scenario": "budget_browse", "question": "Laptop gaming dưới 20 triệu", "context": "", "expected_facts": ["laptop", "20 triệu hoặc ngân sách", "danh sách hoặc gợi ý sản phẩm"]}
+{"id": "budget_02", "scenario": "budget_browse", "question": "Điện thoại tầm 10 triệu", "context": "", "expected_facts": ["điện thoại", "10 triệu", "gợi ý hoặc danh sách"]}
+{"id": "category_01", "scenario": "category_browse", "question": "iPhone dưới 20 triệu", "context": "", "expected_facts": ["iPhone", "20 triệu", "danh sách hoặc lọc giá"]}
+{"id": "category_02", "scenario": "category_browse", "question": "Tai nghe bluetooth dưới 2 triệu", "context": "", "expected_facts": ["tai nghe", "2 triệu"]}
+{"id": "tradein_01", "scenario": "trade_in", "question": "Lên đời từ iPhone 14 lên iPhone 16 Pro Max được trợ giá bao nhiêu", "context": "", "expected_facts": ["thu cũ hoặc trợ giá", "iPhone 16 Pro Max"]}
+{"id": "specs_01", "scenario": "specs", "question": "MacBook Pro M5 16GB cấu hình thế nào", "context": "", "expected_facts": ["MacBook Pro", "RAM hoặc cấu hình hoặc thông số"]}
+{"id": "specs_02", "scenario": "specs", "question": "Samsung Galaxy S26 Ultra pin bao nhiêu mAh", "context": "", "expected_facts": ["pin", "S26 Ultra hoặc Galaxy"]}
+{"id": "store_01", "scenario": "store_locator", "question": "CellphoneS quận 1 ở đâu", "context": "", "expected_facts": ["cửa hàng", "quận 1", "địa chỉ"]}
+{"id": "store_02", "scenario": "store_locator", "question": "Shop CellphoneS gần quận 7", "context": "", "expected_facts": ["cửa hàng", "quận 7"]}
+{"id": "followup_01", "scenario": "follow_up", "question": "còn hàng không", "context": "Sản phẩm đang thảo luận: iPhone 17 Pro Max 256GB\nTừ khóa tìm gần nhất: iPhone 17 Pro Max 256GB", "expected_facts": ["tồn hoặc còn hàng", "iPhone 17 Pro Max"]}
+{"id": "followup_02", "scenario": "follow_up", "question": "giá sao", "context": "Sản phẩm đang thảo luận: Samsung Galaxy S26 Ultra\nTừ khóa tìm gần nhất: Samsung Galaxy S26 Ultra", "expected_facts": ["giá", "S26 Ultra hoặc Galaxy"]}
+{"id": "followup_03", "scenario": "follow_up", "question": "hsbc 12 tháng VISA", "context": "Sản phẩm đang thảo luận: Xiaomi 17T 512GB\nTừ khóa tìm gần nhất: xiaomi 17t", "expected_facts": ["trả góp", "HSBC", "12 tháng", "Xiaomi 17T"]}
+{"id": "social_01", "scenario": "greeting", "question": "xin chào", "context": "", "expected_facts": ["chào", "CellphoneS hoặc tư vấn"]}
+{"id": "social_02", "scenario": "help", "question": "bot làm được gì", "context": "", "expected_facts": ["giá hoặc tồn hoặc trả góp hoặc tư vấn", "CellphoneS"]}
+{"id": "offtopic_01", "scenario": "off_topic", "question": "thời tiết hôm nay thế nào", "context": "", "expected_facts": ["CellphoneS hoặc sản phẩm", "không trả lời thời tiết"]}
+{"id": "offtopic_02", "scenario": "off_topic", "question": "viết code python giùm", "context": "", "expected_facts": ["CellphoneS hoặc sản phẩm", "không viết code"]}
+{"id": "clarify_01", "scenario": "clarify", "question": "tư vấn giúp mình", "context": "", "expected_facts": ["sản phẩm", "gợi ý hoặc hỏi lại"]}
+{"id": "browse_stock_01", "scenario": "stock_browse", "question": "điện thoại đang đặt trước", "context": "", "expected_facts": ["đặt trước", "danh sách hoặc sản phẩm"]}
+{"id": "browse_stock_02", "scenario": "stock_browse", "question": "laptop còn hàng online", "context": "", "expected_facts": ["laptop", "còn hàng hoặc danh sách"]}
+{"id": "accessory_01", "scenario": "price", "question": "Giá pin dự phòng Anker 10000mAh", "context": "", "expected_facts": ["Anker", "pin dự phòng hoặc sạc", "giá"]}
+{"id": "accessory_02", "scenario": "price", "question": "Tai nghe Sony WH-1000XM5 giá bao nhiêu", "context": "", "expected_facts": ["Sony", "WH-1000XM5", "giá"]}
+{"id": "tablet_01", "scenario": "price", "question": "iPad Pro M4 256GB wifi giá bao nhiêu", "context": "", "expected_facts": ["iPad Pro", "256GB", "giá"]}
+{"id": "watch_01", "scenario": "price", "question": "Apple Watch Series 10 giá bao nhiêu", "context": "", "expected_facts": ["Apple Watch", "giá"]}
+{"id": "combo_01", "scenario": "combo", "question": "iPhone 16 Pro Max mua combo tiết kiệm gì không", "context": "", "expected_facts": ["combo hoặc mua kèm", "iPhone 16 Pro Max"]}
+{"id": "review_01", "scenario": "reviews", "question": "iPhone 16 Pro Max đánh giá khách hàng thế nào", "context": "", "expected_facts": ["đánh giá hoặc review", "iPhone 16 Pro Max"]}
+{"id": "flash_01", "scenario": "flash_sale", "question": "iPhone 16 có flash sale không", "context": "", "expected_facts": ["flash sale hoặc khuyến mãi", "iPhone 16"]}

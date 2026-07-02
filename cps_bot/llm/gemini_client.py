@@ -1283,6 +1283,62 @@ def _prior_session_text(last_keywords: str, last_product_name: str) -> str:
     return f"{last_keywords or ''} {last_product_name or ''}".strip()
 
 
+def _session_hints_from_context(conversation_context: str) -> tuple[str, str]:
+    """Trích last_keywords / product_name từ format_context_block."""
+    keywords = ""
+    product_name = ""
+    for line in (conversation_context or "").splitlines():
+        if line.startswith("Sản phẩm đang thảo luận:"):
+            product_name = line.split(":", 1)[1].strip()
+        elif line.startswith("Từ khóa tìm gần nhất:"):
+            keywords = line.split(":", 1)[1].strip()
+    return keywords, product_name
+
+
+def _session_conflict(
+    text: str,
+    *,
+    last_keywords: str = "",
+    last_product_name: str = "",
+    prior_text: str = "",
+) -> bool:
+    """
+    True nếu câu mới xung đột với session (dòng/model/màn hình).
+    Gom product_context_conflict + models_conflict + screen_size_conflict.
+    """
+    query = (text or "").strip()
+    if not query:
+        return False
+
+    prior = (prior_text or _prior_session_text(last_keywords, last_product_name)).strip()
+    session_text = _prior_session_text(last_keywords, last_product_name)
+
+    if prior:
+        from cps_bot.browse.product_lines import product_context_conflict
+
+        if product_context_conflict(query, prior):
+            return True
+
+    if session_text and models_conflict_with_session(
+        query,
+        last_keywords=last_keywords,
+        last_product_name=last_product_name,
+    ):
+        return True
+
+    if session_text:
+        from cps_bot.cps.cps_api import screen_size_conflicts_with_session
+
+        if screen_size_conflicts_with_session(
+            query,
+            last_keywords=last_keywords,
+            last_product_name=last_product_name,
+        ):
+            return True
+
+    return False
+
+
 def models_conflict_with_session(
     text: str,
     *,
@@ -1334,26 +1390,14 @@ def identity_compatible_with_session(
     query = (text or "").strip()
     if not query:
         return False
-    prior = _prior_session_text(last_keywords, last_product_name)
-    if prior:
-        from cps_bot.browse.product_lines import product_context_conflict
-
-        if product_context_conflict(query, prior):
-            return False
-    if models_conflict_with_session(
+    if _session_conflict(
         query,
         last_keywords=last_keywords,
         last_product_name=last_product_name,
     ):
         return False
-    from cps_bot.cps.cps_api import is_color_variant_query, screen_size_conflicts_with_session
+    from cps_bot.cps.cps_api import is_color_variant_query
 
-    if screen_size_conflicts_with_session(
-        query,
-        last_keywords=last_keywords,
-        last_product_name=last_product_name,
-    ):
-        return False
     if is_color_variant_query(query):
         return True
     if is_affirmative_follow_up(query):
@@ -1379,26 +1423,14 @@ def should_reuse_product_identity(
     if not query or not prior:
         return False
 
-    if models_conflict_with_session(
+    if _session_conflict(
         query,
         last_keywords=last_keywords,
         last_product_name=last_product_name,
     ):
         return False
 
-    from cps_bot.browse.product_lines import product_context_conflict
-
-    if prior and product_context_conflict(query, prior):
-        return False
-
-    from cps_bot.cps.cps_api import is_color_variant_query, screen_size_conflicts_with_session
-
-    if screen_size_conflicts_with_session(
-        query,
-        last_keywords=last_keywords,
-        last_product_name=last_product_name,
-    ):
-        return False
+    from cps_bot.cps.cps_api import is_color_variant_query
 
     if is_color_variant_query(query):
         return True
@@ -1450,14 +1482,20 @@ def is_contextual_follow_up(
     """
     Câu hỏi tiếp trong cùng chủ đề SP (kể cả hỏi quà tặng/KM mà không nhắc tên SP).
     """
-    from cps_bot.browse.product_lines import context_product_text, product_context_conflict
+    from cps_bot.browse.product_lines import context_product_text
 
     if is_budget_browse_query(text):
         return False
     if not _context_has_product(conversation_context):
         return False
     ctx_product = context_product_text(conversation_context)
-    if product_context_conflict(text, ctx_product):
+    kw, pname = _session_hints_from_context(conversation_context)
+    if _session_conflict(
+        text,
+        last_keywords=kw,
+        last_product_name=pname,
+        prior_text=ctx_product or pname,
+    ):
         return False
     from cps_bot.cps.cps_api import is_color_variant_query
 
