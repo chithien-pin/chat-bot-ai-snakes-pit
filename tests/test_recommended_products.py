@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from cps_bot.cps.cps_api import (
+    _enrich_payload_for_scenarios_inner,
     _recommendation_product_id,
     fetch_recommended_products,
 )
@@ -86,6 +87,55 @@ class RecommendedProductsTest(unittest.TestCase):
         self.assertTrue(records[0]["price"])
         self.assertIn("op-lung-iphone-17.html", records[0]["url"])
         self.assertEqual(records[1]["name"], "Cường lực iPhone 17")
+
+    def test_enrich_skips_recommendations_for_price_query(self) -> None:
+        detail = {
+            "product_id": "125876",
+            "parent_id": "125874",
+            "name": "MacBook Neo 13 inch A18 Pro 2026 8GB 256GB",
+            "stock_available_id": 46,
+        }
+        payload: dict[str, Any] = {"primary_product": dict(detail), "search_results": []}
+
+        async def _run() -> dict[str, bool]:
+            with (
+                patch(
+                    "cps_bot.cps.cps_api.fetch_recommended_products",
+                    new_callable=AsyncMock,
+                ) as mock_recommended,
+                patch(
+                    "cps_bot.cps.cps_api.fetch_trade_promo_for_product",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "cps_bot.cps.cps_api.fetch_extended_warranty_for_product",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "cps_bot.cps.cps_api.fetch_instock_other_provinces",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "cps_bot.cps.cps_enrich.enrich_extended_scenarios",
+                    new_callable=AsyncMock,
+                    return_value={},
+                ),
+            ):
+                fetched = await _enrich_payload_for_scenarios_inner(
+                    payload,
+                    detail,
+                    user_question="HSSV mua MacBook Neo có ưu đãi gì không",
+                    province_id=30,
+                )
+                mock_recommended.assert_not_awaited()
+                return fetched
+
+        fetched = asyncio.run(_run())
+        self.assertNotIn("recommended_products", payload)
+        self.assertNotIn("recommended_products", fetched)
 
 
 if __name__ == "__main__":

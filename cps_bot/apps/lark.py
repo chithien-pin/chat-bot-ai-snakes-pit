@@ -92,7 +92,6 @@ from cps_bot.llm.disambiguation import build_disambiguation_message, resolve_dis
 from cps_bot.llm.gemini_client import (
     analyze_product_with_meta,
     extract_compare_product_queries,
-    extract_search_keywords,
     is_affirmative_follow_up,
     is_contextual_follow_up,
     llm_provider_display_name,
@@ -111,7 +110,7 @@ from cps_bot.browse.fast_reply import (
 from cps_bot.core.metrics import emit_metric
 from cps_bot.core.user_display import resolve_lark_user_name
 from cps_bot.llm.message_intent import is_social_message, resolve_message_intent
-from cps_bot.llm.query_router import apply_route_to_keywords, resolve_query_route
+from cps_bot.llm.query_router import resolve_pipeline_search_keywords, resolve_query_route
 from cps_bot.browse.budget_browse import is_budget_browse_query
 from cps_bot.core.location_flow import handle_province_gate, shop_question_for_session
 from cps_bot.cps.scraper import build_product_payload, build_response_link_url, format_product_links_appendix, is_browse_list_mode, product_url_from_record, should_attach_product_links_appendix
@@ -888,19 +887,19 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
             metric_data["query_route_source"] = query_route.source
             metric_data["query_route_confidence"] = query_route.confidence
 
-            if query_route.confidence >= 0.85 and query_route.search_keywords:
-                search_keywords = query_route.search_keywords
-            else:
-                if (
-                    needs_query_expansion(user_question)
-                    and not stock_browse
-                    and not budget_browse
-                ):
-                    messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
-                search_keywords = await asyncio.to_thread(
-                    extract_search_keywords, user_question, kw_context
-                )
-                search_keywords = apply_route_to_keywords(query_route, search_keywords)
+            if (
+                needs_query_expansion(user_question)
+                and not stock_browse
+                and not budget_browse
+                and query_route.mode != "category_browse"
+            ):
+                messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
+            search_keywords = await asyncio.to_thread(
+                resolve_pipeline_search_keywords,
+                user_question,
+                query_route,
+                conversation_context=kw_context,
+            )
             budget_browse = budget_browse or query_route.mode == "budget_browse"
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         stock_browse = is_stock_status_browse_query(user_question)
@@ -1161,7 +1160,12 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
             if appendix and appendix not in answer:
                 answer = truncate_message(f"{answer}{appendix}")
 
-        disambig_msg = build_disambiguation_message(results) if fetch_stats.get("ambiguous_search") else ""
+        disambig_msg = (
+            build_disambiguation_message(results)
+            if fetch_stats.get("ambiguous_search")
+            and fetch_stats.get("resolve_source") == "search_results"
+            else ""
+        )
         if disambig_msg and disambig_msg not in answer:
             answer = truncate_message(f"{answer}\n\n{disambig_msg}")
 

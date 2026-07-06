@@ -21,7 +21,7 @@ class MacbookNeoMapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_macbook_neo_not_iphone(self) -> None:
         hit = resolve_product_from_map("macbook neo hồng 512g")
@@ -32,7 +32,7 @@ class MacbookNeoMapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_iphone_map_confidence_rejects_wrong_brand(self) -> None:
         conf = compute_map_match_confidence(
@@ -43,7 +43,7 @@ class MacbookNeoMapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_macbook_neo_confidence_high(self) -> None:
         conf = compute_map_match_confidence(
@@ -54,7 +54,23 @@ class MacbookNeoMapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
+    )
+    def test_macbook_air_m2_rejects_accessory_hit(self) -> None:
+        conf = compute_map_match_confidence(
+            "MacBook Air M2",
+            "Dán màn hình MacBook Air M2 2022 13 inch Mocoll",
+        )
+        self.assertEqual(conf, 0.0)
+
+        hit = resolve_product_from_map("MacBook Air M2")
+        self.assertIsNotNone(hit, "phải resolve được MacBook Air M2 thật")
+        self.assertIn("macbook air m2", hit.name.lower())
+        self.assertNotIn("Dán", hit.name)
+
+    @unittest.skipUnless(
+        __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
+        "product_map.map missing",
     )
     def test_iphone_16_still_resolves(self) -> None:
         hit = resolve_product_from_map("iphone 16 hồng 256g")

@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-02T00:00:00.480135+00:00",
+  "updated_at": "2026-07-05T09:21:39.825171+00:00",
   "menu_id": 5,
   "link_count": 556,
   "category_count": 367,
@@ -1352,6 +1352,16 @@
       "name": "Soundcore Liberty 5 Pro Max",
       "path": "tai-nghe-tws-anker-soundcore-liberty-5-pro-max.html",
       "reason": "not_category"
+    },
+    {
+      "name": "OPPO Reno16 F 5G",
+      "path": "dien-thoai-oppo-reno16-f.html",
+      "reason": "not_category"
+    },
+    {
+      "name": "Xiaomi Redmi A7",
+      "path": "dien-thoai-xiaomi-redmi-a7.html",
+      "reason": "not_category"
     }
   ],
   "errors": [],
@@ -1401,6 +1411,7 @@
     "dien-thoai-oppo-find-x9-ultra.html",
     "dien-thoai-oppo-find-x9.html",
     "dien-thoai-oppo-reno15.html",
+    "dien-thoai-oppo-reno16-f.html",
     "dien-thoai-samsung-galaxy-a57.html",
     "dien-thoai-samsung-galaxy-s25-edge.html",
     "dien-thoai-samsung-galaxy-s26-ultra.html",
@@ -1413,6 +1424,7 @@
     "dien-thoai-xiaomi-17t-pro.html",
     "dien-thoai-xiaomi-17t.html",
     "dien-thoai-xiaomi-poco-x8-pro-max.html",
+    "dien-thoai-xiaomi-redmi-a7.html",
     "dien-thoai-xiaomi-redmi-note-15.html",
     "do-choi-cong-nghe.html",
     "do-choi-cong-nghe/amazfit.html",

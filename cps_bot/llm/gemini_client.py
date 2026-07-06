@@ -369,6 +369,24 @@ _WARRANTY_CONTEXT_RE = re.compile(
     r"rơi vỡ|roi vo|apple care\+?|applecare)\b",
     re.IGNORECASE,
 )
+_INSTALLMENT_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"thông tin trả góp|thong tin tra gop|"
+    r"trả góp|tra gop|"
+    r"gói nào ưu đãi nhất|goi nao uu dai nhat|"
+    r"gói ưu đãi nhất|goi uu dai nhat|"
+    r"gói tốt nhất|goi tot nhat|"
+    r"trả trước thấp nhất|tra truoc thap nhat|"
+    r"trả trước ít nhất|tra truoc it nhat|"
+    r"miễn lãi|mien lai|0%|"
+    r"qua thẻ tín dụng|qua the tin dung|"
+    r"qua thẻ|qua the|"
+    r"qua ngân hàng|qua ngan hang|"
+    r"kỳ hạn|ky han|"
+    r"tháng"
+    r")\b",
+    re.IGNORECASE,
+)
 # Nhu cầu sử dụng — đưa vào câu hỏi Gemini, không gửi API search
 _USAGE_CONTEXT_RE = re.compile(
     r"\b("
@@ -388,7 +406,7 @@ _LOCAL_ABBREV: dict[str, str] = {
     "ncđ": "nồi chiên không dầu",
     "tbnv": "tai nghe bluetooth",
     "tnbl": "tai nghe bluetooth",
-    "sdp": "sạc dự phòng",
+    "sdp": "pin dự phòng",
     "ss": "samsung",
     "ip": "iphone",
     "mb": "macbook",
@@ -1001,6 +1019,7 @@ def _strip_search_noise(text: str) -> str:
     cleaned = _INCOMING_STOCK_SUFFIX_RE.sub("", cleaned)
     cleaned = _TRADE_CONTEXT_RE.sub(" ", cleaned)
     cleaned = _WARRANTY_CONTEXT_RE.sub(" ", cleaned)
+    cleaned = _INSTALLMENT_CONTEXT_RE.sub(" ", cleaned)
     cleaned = re.sub(
         r"^(?:tìm|tim)\s+(?:cửa hàng|cua hang|shop)\s+(?:gần nhất|gan nhat)\s+"
         r"(?:có đủ|co du|có|có)\s+combo\s+",
@@ -1608,7 +1627,7 @@ def extract_search_keywords(
         return keywords
 
     local_keywords = _normalize_keyword_line(
-        _strip_usage_context(_replace_abbrev_tokens(original))
+        _strip_usage_context(_strip_search_noise(_replace_abbrev_tokens(original)))
     )
 
     local_full = _LOCAL_ABBREV.get(original.lower())

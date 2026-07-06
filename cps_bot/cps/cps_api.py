@@ -1765,9 +1765,24 @@ def _is_product_map_query(keywords: str) -> bool:
 
 
 def _product_terms_for_resolution(keywords: str, user_message: str) -> str:
-    """Tách tên SP từ câu hỏi — dùng khi keywords là filter URL."""
+    """
+    Tách tên SP từ câu hỏi — ưu tiên `keywords` (đã tách theo từng SP / từng vế
+    so sánh); chỉ rơi về `user_message` khi keywords không phải tên SP (vd filter URL).
+    """
     kw = (keywords or "").strip()
     if _is_product_map_query(kw):
+        from cps_bot.browse.product_term_synonyms import normalize_product_terms
+        from cps_bot.llm.gemini_client import (
+            _normalize_keyword_line,
+            _replace_abbrev_tokens,
+            _strip_search_noise,
+        )
+
+        expanded = _normalize_keyword_line(
+            _strip_search_noise(_replace_abbrev_tokens(normalize_product_terms(kw)))
+        )
+        if expanded and _is_product_map_query(expanded):
+            return expanded
         return kw
     msg = (user_message or "").strip()
     if not msg:
@@ -4080,7 +4095,7 @@ async def _enrich_payload_for_scenarios_inner(
                 fetched["similar_products"] = True
         else:
             rec_pid = _recommendation_product_id(detail)
-            if rec_pid:
+            if rec_pid and (scenarios.get("combo") or scenarios.get("advice")):
                 recommended = await fetch_recommended_products(
                     rec_pid,
                     province_id=pid,

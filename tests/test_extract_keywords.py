@@ -63,6 +63,18 @@ def test_macbook_neo_falls_back_when_llm_swaps_to_air():
     assert "macbook" in kw.lower()
 
 
+def test_installment_question_strips_to_product_keywords():
+    kw = extract_search_keywords(
+        "Thông tin trả góp MacBook Neo 256GB, gói nào ưu đãi nhất",
+        use_llm=False,
+    )
+    assert "macbook" in kw.lower()
+    assert "neo" in kw.lower()
+    assert "256" in kw.lower()
+    assert "trả góp" not in kw.lower()
+    assert "ưu đãi" not in kw.lower()
+
+
 if __name__ == "__main__":
     test_iphone_promax_price_question()
     test_normalize_promax_compound()

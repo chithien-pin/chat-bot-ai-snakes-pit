@@ -85,7 +85,7 @@ SEARCH_PICK_CASES: tuple[SearchPickCase, ...] = (
     ),
 )
 
-# Map thật — skip nếu không có file product_map.txt
+# Map thật — skip nếu không có file product_map.map
 REAL_MAP_CASES: tuple[MapCase, ...] = (
     MapCase("map_ip16_base", "iphone 16", "59254", "iPhone 16"),
     MapCase("map_ip16_luu_ly", "iphone 16 xanh lưu ly", "59254", "iPhone 16"),

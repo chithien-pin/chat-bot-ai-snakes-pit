@@ -94,6 +94,23 @@ def _looks_like_specific_product(text: str) -> bool:
     return False
 
 
+def _product_search_keywords(text: str) -> str:
+    """Rút gọn câu hỏi noisy về keyword sản phẩm trước khi route product_search."""
+    from cps_bot.browse.product_term_synonyms import normalize_product_terms
+    from cps_bot.llm.gemini_client import (
+        _normalize_keyword_line,
+        _replace_abbrev_tokens,
+        _strip_search_noise,
+    )
+
+    cleaned = _normalize_keyword_line(
+        _strip_search_noise(
+            _replace_abbrev_tokens(normalize_product_terms(text or ""))
+        )
+    )
+    return cleaned or (text or "").strip()
+
+
 def _rule_route(text: str) -> QueryRoute:
     """Routing deterministic — luôn chạy trước LLM."""
     original = (text or "").strip()
@@ -134,9 +151,10 @@ def _rule_route(text: str) -> QueryRoute:
         )
 
     if re.search(r"\bpocket\s*\d+\b", original, re.I):
+        search_kw = _product_search_keywords(original)
         return QueryRoute(
             mode="product_search",
-            search_keywords=original,
+            search_keywords=search_kw,
             confidence=0.88,
             source="rule",
         )
@@ -146,9 +164,10 @@ def _rule_route(text: str) -> QueryRoute:
     # Chỉ chốt product_search khi có tín hiệu TÊN SẢN PHẨM cụ thể (hãng/model),
     # tránh coi câu tả nhu cầu ("designer làm 3D") là tìm 1 SP.
     if _is_map_query(original) and _looks_like_specific_product(original):
+        search_kw = _product_search_keywords(original)
         return QueryRoute(
             mode="product_search",
-            search_keywords=original,
+            search_keywords=search_kw,
             confidence=0.85,
             source="rule",
         )
@@ -325,3 +344,29 @@ def apply_route_to_keywords(route: QueryRoute, fallback_keywords: str) -> str:
     if route.filter_url:
         return route.filter_url
     return fallback_keywords
+
+
+def resolve_pipeline_search_keywords(
+    user_question: str,
+    route: QueryRoute,
+    *,
+    conversation_context: str = "",
+    use_llm: bool = True,
+) -> str:
+    """
+    Từ khóa gửi fetch — router chọn mode/browse URL;
+    product_search luôn qua extract_search_keywords (expand 17prm → pro max).
+    """
+    if route.mode == "category_browse":
+        return (route.filter_url or route.search_keywords or "").strip()
+
+    from cps_bot.llm.gemini_client import extract_search_keywords
+
+    keywords = extract_search_keywords(
+        user_question,
+        conversation_context,
+        use_llm=use_llm,
+    )
+    if route.filter_url:
+        return route.filter_url.strip()
+    return (keywords or "").strip()

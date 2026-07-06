@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChatBot CPS - Technical Presentation</title>
+  <style>
+    :root {
+      --bg: #09111f;
+      --panel: rgba(15, 23, 42, 0.92);
+      --panel-soft: rgba(30, 41, 59, 0.86);
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e5eefb;
+      --muted: #9fb0ca;
+      --accent: #d70018;
+      --accent-soft: #ff6b81;
+      --ok: #22c55e;
+      --info: #38bdf8;
+      --warn: #f59e0b;
+      --shadow: 0 24px 80px rgba(2, 6, 23, 0.45);
+      --radius: 24px;
+      --font: Inter, "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 28%),
+        radial-gradient(circle at top right, rgba(215, 0, 24, 0.2), transparent 30%),
+        linear-gradient(180deg, #08101c 0%, #0c1728 100%);
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 24px;
+      gap: 18px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 20px;
+      background: rgba(9, 17, 31, 0.55);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand p,
+    .counter,
+    .hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .presentation {
+      flex: 1;
+      display: grid;
+      place-items: center;
+    }
+
+    .deck {
+      width: min(1200px, 100%);
+      min-height: min(78vh, 840px);
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.9));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress {
+      height: 5px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 20%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-soft));
+      transition: width 220ms ease;
+    }
+
+    .slide {
+      display: none;
+      height: calc(100% - 5px);
+      padding: 52px 56px 44px;
+      animation: fadeIn 220ms ease;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .eyebrow {
+      color: var(--info);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(2rem, 3.8vw, 3.5rem);
+      line-height: 1.06;
+      letter-spacing: -0.04em;
+      max-width: 12ch;
+    }
+
+    .lead {
+      margin: 0;
+      max-width: 72ch;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.7vw, 1.2rem);
+      line-height: 1.6;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .card,
+    .step,
+    .metric,
+    .pill,
+    .callout {
+      background: var(--panel-soft);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+    }
+
+    .card,
+    .callout {
+      padding: 22px 24px;
+    }
+
+    .card h3,
+    .callout h3 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+    }
+
+    .card p,
+    .callout p,
+    .card li,
+    .callout li,
+    .step li {
+      color: var(--muted);
+      line-height: 1.58;
+    }
+
+    .grid-3,
+    .grid-4 {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .metric {
+      padding: 18px 18px 20px;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 10px;
+    }
+
+    .metric .value {
+      font-size: 1.45rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .metric .desc {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .pill {
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      white-space: nowrap;
+    }
+
+    .arrow {
+      color: var(--accent-soft);
+      font-size: 1.2rem;
+      font-weight: 800;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .step {
+      padding: 18px 18px 20px;
+    }
+
+    .step .num {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: rgba(215, 0, 24, 0.18);
+      color: #ffd6dc;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    .step h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+    }
+
+    .step ul,
+    .card ul,
+    .callout ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 18px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .timeline-item strong {
+      font-size: 0.98rem;
+    }
+
+    .timeline-item span {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .footerbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 18px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(9, 17, 31, 0.55);
+      backdrop-filter: blur(14px);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      color: white;
+      background: linear-gradient(90deg, var(--accent), var(--accent-soft));
+      transition: transform 140ms ease, opacity 140ms ease;
+    }
+
+    button.secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .mini {
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .accent {
+      color: #ffd6dc;
+    }
+
+    .good {
+      color: #86efac;
+    }
+
+    .warn {
+      color: #fcd34d;
+    }
+
+    .small {
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    @media (max-width: 960px) {
+      .app {
+        padding: 14px;
+      }
+
+      .deck {
+        min-height: auto;
+      }
+
+      .slide {
+        padding: 30px 22px 24px;
+      }
+
+      .two-col,
+      .grid-3,
+      .grid-4,
+      .steps {
+        grid-template-columns: 1fr;
+      }
+
+      .timeline-item {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar,
+      .footerbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Lark ChatBot CPS Technical Presentation</h1>
+        <p>Standalone HTML deck cho buổi present, tập trung vào kênh Lark</p>
+      </div>
+      <p class="counter" id="counter">Slide 1 / 5</p>
+    </header>
+
+    <main class="presentation">
+      <section class="deck">
+        <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+
+        <article class="slide active">
+          <div>
+            <p class="eyebrow">Slide 1</p>
+            <h2>Cách dùng Lark bot trong thực tế</h2>
+          </div>
+          <p class="lead">
+            Trải nghiệm sử dụng được thiết kế cho môi trường <span class="accent">group chat và topic trên Lark</span>:
+            bot chỉ xuất hiện khi đúng ngữ cảnh, nhưng vẫn giữ được hội thoại nhiều turn khi user cần hỏi tiếp.
+          </p>
+
+          <div class="grid-4">
+            <div class="metric">
+              <div class="label">Bắt đầu hội thoại</div>
+              <div class="value">@bot first</div>
+              <div class="desc">Trong topic: @bot lần đầu, các câu tiếp theo có thể không cần @.</div>
+            </div>
+            <div class="metric">
+              <div class="label">Ngữ cảnh hội thoại</div>
+              <div class="value">Topic-aware</div>
+              <div class="desc">Bot nhớ sản phẩm đang nói tới trong cùng topic/thread.</div>
+            </div>
+            <div class="metric">
+              <div class="label">Loại câu hỏi</div>
+              <div class="value">Product Q&amp;A</div>
+              <div class="desc">Giá, khuyến mãi, tồn kho, trả góp, trade-in, so sánh sản phẩm.</div>
+            </div>
+            <div class="metric">
+              <div class="label">Nguyên tắc UX</div>
+              <div class="value">Quiet by default</div>
+              <div class="desc">Nếu không được gọi đúng cách, bot sẽ im lặng để tránh spam group.</div>
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="card">
+              <h3>User dùng bot như thế nào?</h3>
+              <ul>
+                <li>@ bot để mở đầu một topic tư vấn sản phẩm.</li>
+                <li>Hỏi các câu như giá, cấu hình, khuyến mãi, trả góp, cửa hàng còn hàng.</li>
+                <li>Hỏi tiếp trong cùng topic: “bản 256GB thì sao?”, “còn màu trắng không?”.</li>
+                <li>Dùng `/help`, `/start`, `/clear`, `/chatid` cho các thao tác hỗ trợ.</li>
+              </ul>
+            </div>
+            <div class="callout">
+              <h3>Điểm đáng nói khi demo</h3>
+              <p>
+                Giá trị trải nghiệm nằm ở chỗ bot không chen vào mọi cuộc trò chuyện.
+                Nó chỉ tham gia khi được gọi, sau đó giữ ngữ cảnh đủ lâu để cuộc tư vấn
+                trong Lark giống một cuộc trao đổi thật.
+              </p>
+            </div>
+          </div>
+        </article>
+
+        <article class="slide">
+          <div>
+            <p class="eyebrow">Slide 2</p>
+            <h2>Nguồn data và độ tin cậy câu trả lời</h2>
+          </div>
+          <p class="lead">
+            Câu trả lời không dựa vào suy đoán của LLM. Bot ưu tiên lấy dữ liệu từ
+            <strong>nguồn CellphoneS thật</strong>, sau đó mới dùng AI để tổng hợp và diễn đạt lại.
+          </p>
+
+          <div class="flow">
+            <div class="pill">Câu hỏi trên Lark</div>
+            <div class="arrow">→</div>
+            <div class="pill">Keyword / Route</div>
+            <div class="arrow">→</div>
+            <div class="pill">CPS APIs + Product Maps</div>
+            <div class="arrow">→</div>
+            <div class="pill">LLM tổng hợp câu trả lời</div>
+          </div>
+
+          <div class="two-col">
+            <div class="card">
+              <h3>Nguồn dữ liệu chính</h3>
+              <ul>
+                <li>GraphQL/API CellphoneS để lấy search result, product detail, stock và promotion.</li>
+                <li>`product_map.map` để map nhanh product name sang `product_id` chính xác hơn.</li>
+                <li>`menu_category_map.json` và `category_attributes_map.json` để browse/lọc theo category.</li>
+                <li>Dữ liệu tồn cửa hàng, trả góp, warranty, trade-in được enrich theo đúng scenario câu hỏi.</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Tại sao đáng tin cậy hơn LLM thuần?</h3>
+              <ul>
+                <li>Bot resolve sản phẩm trước, rồi mới để LLM diễn giải trên payload đã có dữ liệu thật.</li>
+                <li>Chi tiết sản phẩm lấy qua GraphQL/detail API, không scrape HTML cho flow chính.</li>
+                <li>Có nhiều nhánh resolve: URL trong tin nhắn, product map, category filter, CPS search.</li>
+                <li>Nếu câu hỏi không rõ hoặc không tìm thấy dữ liệu, bot có thể hỏi lại thay vì bịa ra câu trả lời.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article class="slide">
+          <div>
+            <p class="eyebrow">Slide 3</p>
+            <h2>Technical architecture phía sau</h2>
+          </div>
+          <p class="lead">
+            Về kỹ thuật, hệ thống được thiết kế theo hướng
+            <strong>rule-first, retrieval-first, LLM-last</strong>
+            để tối ưu độ đúng, khả năng mở rộng và khả năng debug.
+          </p>
+
+          <div class="steps">
+            <div class="step">
+              <div class="num">1</div>
+              <h3>Lark Entry Layer</h3>
+              <ul>
+                <li>Nhận event message, bỏ app message và parse text content.</li>
+                <li>Strip mention, xử lý command và group gate trước khi vào pipeline.</li>
+                <li>Quản lý topic bằng alias map và canonical topic id.</li>
+              </ul>
+            </div>
+            <div class="step">
+              <div class="num">2</div>
+              <h3>Conversation Layer</h3>
+              <ul>
+                <li>Session theo `chat_id + user_id + thread_key` để nhớ context hội thoại.</li>
+                <li>Phân loại intent: greeting, off-topic, product query.</li>
+                <li>Hỏi tỉnh/thành trước khi kiểm tra tồn cửa hàng nếu thiếu location.</li>
+              </ul>
+            </div>
+            <div class="step">
+              <div class="num">3</div>
+              <h3>Retrieval Layer</h3>
+              <ul>
+                <li>Route câu hỏi thành product search, category browse hoặc budget browse.</li>
+                <li>Resolve qua URL, product map, category filter, CPS GraphQL search và product detail.</li>
+                <li>Enrich theo scenario: stock, installment, warranty, trade-in, color variants.</li>
+              </ul>
+            </div>
+            <div class="step">
+              <div class="num">4</div>
+              <h3>Answer + Observability</h3>
+              <ul>
+                <li>Dùng template reply cho case nhanh, LLM cho case phân tích phức tạp.</li>
+                <li>Ghi metrics, pipeline trace và feedback context cho từng message.</li>
+                <li>Dễ debug vì biết bot đi qua nhánh resolve nào và tốn thời gian ở đâu.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="callout">
+            <h3>Thông điệp technical nên chốt</h3>
+            <p>
+              Hệ thống không xem chatbot như một black box.
+              Mỗi tin nhắn đều có đường đi rõ ràng: từ gate trên Lark, đến retrieval dữ liệu thật,
+              rồi mới đến lớp AI để tạo câu trả lời tự nhiên.
+            </p>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer class="footerbar">
+      <div>
+        <p class="mini">Điều hướng bằng nút bấm, phím mũi tên trái/phải, hoặc phím Space.</p>
+        <p class="hint" id="slideTitle">Lark chatbot tư vấn sản phẩm cho CellphoneS</p>
+      </div>
+      <div class="nav">
+        <button class="secondary" id="prevBtn" type="button">Prev</button>
+        <button id="nextBtn" type="button">Next</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const counter = document.getElementById("counter");
+    const progressBar = document.getElementById("progressBar");
+    const slideTitle = document.getElementById("slideTitle");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    let current = 0;
+
+    function updateSlide() {
+      slides.forEach((slide, index) => {
+        slide.classList.toggle("active", index === current);
+      });
+
+      const total = slides.length;
+      const title = slides[current].querySelector("h2")?.textContent || "";
+      counter.textContent = `Slide ${current + 1} / ${total}`;
+      slideTitle.textContent = title;
+      progressBar.style.width = `${((current + 1) / total) * 100}%`;
+      prevBtn.disabled = current === 0;
+      nextBtn.disabled = current === total - 1;
+      document.title = `${title} - ChatBot CPS`;
+    }
+
+    function goNext() {
+      if (current < slides.length - 1) {
+        current += 1;
+        updateSlide();
+      }
+    }
+
+    function goPrev() {
+      if (current > 0) {
+        current -= 1;
+        updateSlide();
+      }
+    }
+
+    prevBtn.addEventListener("click", goPrev);
+    nextBtn.addEventListener("click", goNext);
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        goNext();
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        goPrev();
+      } else if (event.key === "Home") {
+        current = 0;
+        updateSlide();
+      } else if (event.key === "End") {
+        current = slides.length - 1;
+        updateSlide();
+      }
+    });
+
+    updateSlide();
+  </script>
+</body>
+</html>

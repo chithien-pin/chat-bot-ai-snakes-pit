@@ -36,9 +36,52 @@ def test_sac_du_phong_product_map_hit():
     assert "pin" in hit.name.lower() or "sạc" in hit.name.lower()
 
 
+def test_glued_iphone_shorthands_expand() -> None:
+    assert normalize_product_terms("ip17prm") == "iphone 17 pro max"
+    assert normalize_product_terms("iphone16prm") == "iphone 16 pro max"
+    assert normalize_product_terms("ip16plus") == "iphone 16 plus"
+
+
+def test_glued_samsung_shorthands_expand() -> None:
+    assert normalize_product_terms("s26u") == "samsung galaxy s26 ultra"
+    assert normalize_product_terms("s26+") == "samsung galaxy s26 plus"
+    assert normalize_product_terms("galaxy s25u") == "samsung galaxy s25 ultra"
+
+
+def test_glued_apple_and_xiaomi_shorthands_expand() -> None:
+    assert normalize_product_terms("ipadpro m4") == "ipad pro m4"
+    assert normalize_product_terms("mbair m4") == "macbook air m4"
+    assert normalize_product_terms("mi14t") == "xiaomi 14t"
+    assert normalize_product_terms("pocket3") == "pocket 3"
+    assert normalize_product_terms("redmi note 14 pro+") == "redmi note 14 pro plus"
+    assert normalize_product_terms("airpodspro3") == "airpods pro 3"
+    assert normalize_product_terms("watchultra2") == "watch ultra 2"
+    assert normalize_product_terms("macbookneo") == "macbook neo"
+    assert normalize_product_terms("opporeno14") == "oppo reno 14"
+
+
+def test_glued_shorthands_resolve_product_map() -> None:
+    cases = {
+        "ip17prm": "17 Pro Max",
+        "s26+": "S26 Plus",
+        "redmi note 14 pro+": "Pro Plus",
+        "mbair m4": "MacBook Air M4",
+        "pocket3": "Pocket 3",
+    }
+    for query, want in cases.items():
+        kw = extract_search_keywords(query, use_llm=False)
+        hit = resolve_product_from_map(kw)
+        assert hit is not None, f"no map for {query!r} -> {kw!r}"
+        assert want.lower() in hit.name.lower(), f"{query!r}: {hit.name!r}"
+
+
 if __name__ == "__main__":
     test_sac_du_phong_normalized_to_pin()
     test_sac_du_phong_airplane_query_keywords()
     test_sac_du_phong_resolves_same_category_as_pin()
     test_sac_du_phong_product_map_hit()
+    test_glued_iphone_shorthands_expand()
+    test_glued_samsung_shorthands_expand()
+    test_glued_apple_and_xiaomi_shorthands_expand()
+    test_glued_shorthands_resolve_product_map()
     print("OK")

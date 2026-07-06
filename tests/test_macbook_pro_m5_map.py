@@ -17,7 +17,7 @@ class MacbookProM5MapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_macbook_pro_m5_base(self) -> None:
         hit = resolve_product_from_map("macbook pro m5")
@@ -29,7 +29,7 @@ class MacbookProM5MapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_macbook_pro_16_m5_not_2022(self) -> None:
         hit = resolve_product_from_map("MacBook Pro 16 M5")
@@ -42,7 +42,7 @@ class MacbookProM5MapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_macbook_pro_16_m4_not_accessory(self) -> None:
         hit = resolve_product_from_map("MacBook Pro 16 M4")
@@ -52,7 +52,7 @@ class MacbookProM5MapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_confidence_rejects_m5_vs_2022(self) -> None:
         conf = compute_map_match_confidence(
@@ -63,7 +63,7 @@ class MacbookProM5MapTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(config.PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_16inch_follow_up_from_14_m5_context(self) -> None:
         from cps_bot.cps.cps_api import (

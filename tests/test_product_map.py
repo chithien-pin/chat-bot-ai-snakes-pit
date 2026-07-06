@@ -27,7 +27,7 @@ def _write_sample_map(path: Path) -> None:
 
 def test_resolve_iphone_16_pro_max_from_map() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        sample = Path(tmp) / "product_map.txt"
+        sample = Path(tmp) / "product_map.map"
         _write_sample_map(sample)
         old_path = config.PRODUCT_MAP_PATH
         try:

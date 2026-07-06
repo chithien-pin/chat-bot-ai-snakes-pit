@@ -117,7 +117,7 @@ DASHBOARD_AUTH_SALT = os.getenv("DASHBOARD_AUTH_SALT", "cps-bot-dashboard").stri
 # Product map — tra product_id trước GraphQL search
 PRODUCT_MAP_PATH = os.getenv(
     "PRODUCT_MAP_PATH",
-    str(Path(__file__).resolve().parent / "data" / "product_map.txt"),
+    str(Path(__file__).resolve().parent / "data" / "product_map.map"),
 ).strip()
 PRODUCT_MAP_ENABLED = os.getenv("PRODUCT_MAP_ENABLED", "1").strip().lower() in {
     "1",

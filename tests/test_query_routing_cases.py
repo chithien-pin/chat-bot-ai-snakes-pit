@@ -9,8 +9,13 @@ from cps_bot.browse.category_filter_browse import (
     resolve_filter_price,
 )
 from cps_bot.browse.product_map import clear_product_map_cache, resolve_product_from_map
-from cps_bot.cps.cps_api import _pick_best_search_result
-from cps_bot.llm.query_router import resolve_query_route
+from cps_bot.cps.cps_api import _pick_best_search_result, _product_terms_for_resolution
+from cps_bot.llm.gemini_client import extract_compare_product_queries
+from cps_bot.llm.query_router import (
+    _product_search_keywords,
+    resolve_pipeline_search_keywords,
+    resolve_query_route,
+)
 
 
 def test_case2_bare_5_trieu_budget_range() -> None:
@@ -165,6 +170,72 @@ def test_case6_vacuum_pa_not_budget() -> None:
     assert not is_budget_browse_query(text)
 
 
+def test_iphone_17prm_router_expands_abbrev() -> None:
+    text = "Giá iphone 17prm"
+    route = resolve_query_route(text, use_llm=False)
+    assert route.mode == "product_search"
+    assert route.search_keywords == "iphone 17 pro max"
+    assert _product_search_keywords(text) == "iphone 17 pro max"
+
+
+def test_iphone_17prm_pipeline_keywords_not_iphone_16() -> None:
+    text = "Giá iphone 17prm"
+    route = resolve_query_route(text, use_llm=False)
+    keywords = resolve_pipeline_search_keywords(text, route, use_llm=False)
+    assert keywords == "iphone 17 pro max"
+
+    clear_product_map_cache()
+    hit = resolve_product_from_map(keywords)
+    assert hit is not None
+    assert "17 Pro Max" in hit.name
+    assert hit.product_id != "59254"
+
+
+def test_compare_sides_resolve_distinct_products() -> None:
+    # Regression: mỗi vế so sánh phải resolve theo TÊN VẾ, không phải cả câu gốc
+    msg = "So sánh MacBook Neo với MacBook Air M2"
+    sides = extract_compare_product_queries(msg)
+    assert sides == ["MacBook Neo", "MacBook Air M2"]
+
+    clear_product_map_cache()
+    hits = []
+    for side in sides:
+        terms = _product_terms_for_resolution(side, msg)
+        assert terms == side, f"{side!r} bị ghi đè thành {terms!r}"
+        hit = resolve_product_from_map(terms)
+        assert hit is not None, f"không resolve được vế {side!r}"
+        hits.append(hit)
+
+    assert "neo" in hits[0].name.lower()
+    assert "air m2" in hits[1].name.lower()
+    assert hits[0].product_id != hits[1].product_id
+
+
+def test_compare_sides_with_abbrev_resolve() -> None:
+    msg = "so sánh ip17prm và s25u"
+    sides = extract_compare_product_queries(msg)
+    assert len(sides) == 2
+    terms = [_product_terms_for_resolution(s, msg) for s in sides]
+    assert terms[0] == "iphone 17 pro max"
+    assert terms[1] == "samsung galaxy s25 ultra"
+
+
+def test_glued_shorthands_pipeline_keywords() -> None:
+    cases = {
+        "ip17prm": "iphone 17 pro max",
+        "iphone17prm": "iphone 17 pro max",
+        "s26+": "samsung galaxy s26 plus",
+        "galaxy s25u": "samsung galaxy s25 ultra",
+        "redmi note 14 pro+": "redmi note 14 pro plus",
+        "mbair m4": "macbook air m4",
+        "pocket3": "pocket 3",
+    }
+    for query, expected in cases.items():
+        route = resolve_query_route(query, use_llm=False)
+        keywords = resolve_pipeline_search_keywords(query, route, use_llm=False)
+        assert keywords == expected, f"{query!r} -> {keywords!r}"
+
+
 if __name__ == "__main__":
     test_case2_bare_5_trieu_budget_range()
     test_case3_iphone_under_20_trieu_apple_filter()
@@ -176,4 +247,9 @@ if __name__ == "__main__":
     test_non_laptop_usecase_not_hijacked()
     test_case6_vacuum_suction_over_10000pa()
     test_case6_vacuum_pa_not_budget()
+    test_iphone_17prm_router_expands_abbrev()
+    test_iphone_17prm_pipeline_keywords_not_iphone_16()
+    test_compare_sides_resolve_distinct_products()
+    test_compare_sides_with_abbrev_resolve()
+    test_glued_shorthands_pipeline_keywords()
     print("OK — query routing case tests passed")

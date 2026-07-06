@@ -18,7 +18,7 @@ from tests.product_resolution_cases import (
 )
 
 _INTEGRATION = os.getenv("PRODUCT_RESOLUTION_INTEGRATION", "").strip() in {"1", "true", "yes"}
-_HAS_MAP = Path(__file__).resolve().parents[1].joinpath("data", "product_map.txt").is_file()
+_HAS_MAP = Path(__file__).resolve().parents[1].joinpath("data", "product_map.map").is_file()
 
 
 class ProductResolutionMatrixTest(unittest.TestCase):
@@ -58,7 +58,7 @@ class ProductResolutionMatrixTest(unittest.TestCase):
                 for bad in case.avoid_substr:
                     self.assertNotIn(bad, best["name"])
 
-    @unittest.skipUnless(_HAS_MAP, "product_map.txt missing")
+    @unittest.skipUnless(_HAS_MAP, "product_map.map missing")
     def test_real_map_matrix(self) -> None:
         for case in REAL_MAP_CASES:
             with self.subTest(case.id):

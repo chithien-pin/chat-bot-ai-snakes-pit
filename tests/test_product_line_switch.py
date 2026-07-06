@@ -86,7 +86,7 @@ class MacMiniAfterMacbookNeoTest(unittest.TestCase):
 
     @unittest.skipUnless(
         __import__("pathlib").Path(__import__("config").PRODUCT_MAP_PATH).is_file(),
-        "product_map.txt missing",
+        "product_map.map missing",
     )
     def test_map_resolves_mac_mini(self) -> None:
         clear_product_map_cache()

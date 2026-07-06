@@ -33,6 +33,7 @@ _SCREEN_INCHES = frozenset({"13", "14", "15", "16"})
 _MACBOOK_ACCESSORY_HINTS = (
     "bo dan", "bộ dán", "dan macbook", "dán macbook", "innostyle", "zeelot",
     "6in1", "6 in 1", "for macbook", "cho macbook", "ốp macbook", "op macbook",
+    "dan man hinh", "dán màn hình", "apple care", "applecare",
 )
 _USED_NAME_HINTS = (
     "cũ", "cu ", " cu", "đã kích hoạt", "da kich hoat",
@@ -41,7 +42,7 @@ _USED_NAME_HINTS = (
 _ACCESSORY_NAME_HINTS = (
     "ốp lưng", "op lung", "tai nghe", "chuột", "chuot", "bàn phím",
     "ban phim", "cáp ", "cap ", "củ sạc", "cu sac", "pin sạc",
-    "kinh cường lực", "miếng dán",
+    "kinh cường lực", "miếng dán", "dán màn hình", "dan man hinh",
 )
 _PHONE_QUERY_HINTS = (
     "iphone", "ipad", "samsung", "galaxy", "xiaomi", "oppo", "vivo",
