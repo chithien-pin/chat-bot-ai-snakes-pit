@@ -231,7 +231,10 @@ _STORE_LOCATOR_RE = re.compile(
 )
 _COMBO_QUESTION_RE = re.compile(
     r"\b("
-    r"combo|mua kèm|mua kem|"
+    r"combo|mua kèm|mua kem|mua cùng|mua cung|mua chung|"
+    r"phụ kiện mua kèm|phu kien mua kem|"
+    r"phụ kiện mua cùng|phu kien mua cung|"
+    r"phụ kiện kèm|phu kien kem|"
     r"mua thêm giảm|mua them giam|"
     r"bundle|cross[- ]?sell"
     r")\b",
@@ -264,6 +267,10 @@ _STOCK_STATUS_QUESTION_RE = re.compile(
 )
 _DISTRICT_STOCK_INTENT_RE = re.compile(
     r"\b(?:có|co|còn|con)\s+h[àa]ng\b",
+    re.IGNORECASE,
+)
+_DISTRICT_TON_INTENT_RE = re.compile(
+    r"\b(?:có|co|còn|con)\s+tồn\b",
     re.IGNORECASE,
 )
 # "còn iphone không", "shop quận 1 còn máy không" — có từ xen giữa còn/có và không
@@ -373,7 +380,7 @@ _SHOP_STOCK_QUESTION_RE = re.compile(
     r"xem chi nhánh|co hang o|hàng ở đâu|hang o dau|"
     r"mua ở đâu|mua o dau|lấy ở đâu|lay o dau|"
     r"còn ở shop|còn shop|con shop|shop nào còn|shop nao con|"
-    r"còn tồn|con ton|"
+    r"còn tồn|con ton|có tồn|co ton|"
     r"tồn kho|ton kho|tồn tại|ton tai|kiểm tra tồn|kiem tra ton|"
     r"nhận tại shop|nhan tai shop|pickup|pick up"
     r")\b",
@@ -3578,6 +3585,13 @@ _SHOP_STOCK_PRODUCT_AFTER_SHOP_CON_TON_RE = re.compile(
     r"shop nào còn tồn\s+(.+?)(?:\s+(?:không|khong|ko|k)\??\s*)?$",
     re.I,
 )
+_SHOP_STOCK_DISTRICT_CO_TON_PRODUCT_RE = re.compile(
+    r"^(?:"
+    r"(?:[qQ]\.?\s*\d+|[qQ]\d+)|"
+    r"(?:quận|quan|huyện|huyen|phường|phuong)\s+\d+"
+    r")\s+(?:có|co|còn|con)\s+tồn\s+(.+)$",
+    re.I,
+)
 _STOCK_AT_LOCATION_FOR_PRODUCT_RE = re.compile(
     r"^tồn kho\s+(?:tại|tai|ở|o)\s+.+?\s+cho\s+(.+)$",
     re.I,
@@ -3629,6 +3643,12 @@ def strip_shop_stock_phrases_for_keywords(text: str) -> str:
         if product and product.lower() not in _GENERIC_STOCK_WORDS:
             return product
 
+    district_co_ton = _SHOP_STOCK_DISTRICT_CO_TON_PRODUCT_RE.match(s)
+    if district_co_ton:
+        product = district_co_ton.group(1).strip()
+        if product and product.lower() not in _GENERIC_STOCK_WORDS:
+            return product
+
     match = _SHOP_STOCK_PRODUCT_AFTER_SHOP_CON_TON_RE.search(s)
     if match:
         product = match.group(1).strip()
@@ -3675,6 +3695,8 @@ def is_district_stock_query(text: str) -> bool:
     if not hint:
         return False
     if _DISTRICT_STOCK_INTENT_RE.search(value):
+        return True
+    if _DISTRICT_TON_INTENT_RE.search(value):
         return True
     if _DISTRICT_TAIL_AVAILABILITY_RE.search(value):
         return True
@@ -3762,6 +3784,11 @@ def _is_category_filter_browse_query(text: str) -> bool:
     return is_category_filter_browse_query(text)
 
 
+def is_combo_accessory_query(text: str) -> bool:
+    """Câu hỏi gói combo / phụ kiện mua kèm cho 1 SP."""
+    return bool(_COMBO_QUESTION_RE.search(text or ""))
+
+
 def classify_question_scenarios(text: str) -> dict[str, bool]:
     """Phân loại kịch bản CSV — dùng để enrich payload và prompt Gemini."""
     value = text or ""
@@ -3787,9 +3814,41 @@ def classify_question_scenarios(text: str) -> dict[str, bool]:
         "flash_sale": bool(_FLASH_SALE_RE.search(value)),
         "trade_in_device": bool(_TRADE_DEVICE_RE.search(value)),
         "store_locator": bool(_STORE_LOCATOR_RE.search(value)),
-        "combo": bool(_COMBO_QUESTION_RE.search(value)),
+        "combo": is_combo_accessory_query(value),
         "color_variants": is_color_variant_list_query(value),
     }
+
+
+_SHOP_STOCK_ENRICH_BLOCKING_SCENARIOS = frozenset({
+    "trade_in",
+    "installment",
+    "warranty",
+    "compare",
+    "specs",
+    "advice",
+    "reviews",
+    "faq_policy",
+    "flash_sale",
+    "trade_in_device",
+    "store_locator",
+    "combo",
+    "incoming_stock",
+    "color_variants",
+    "price_promotion",
+    "budget_browse",
+    "category_filter_browse",
+    "stock_browse",
+})
+
+
+def should_skip_scenario_enrich(text: str) -> bool:
+    """Câu hỏi tồn/so sánh thuần — bỏ enrich song song."""
+    scenarios = classify_question_scenarios(text)
+    if scenarios.get("shop_stock"):
+        return not any(scenarios.get(key) for key in _SHOP_STOCK_ENRICH_BLOCKING_SCENARIOS)
+    if scenarios.get("compare"):
+        return not any(scenarios.get(key) for key in _SHOP_STOCK_ENRICH_BLOCKING_SCENARIOS)
+    return False
 
 
 async def fetch_trade_promo_for_product(

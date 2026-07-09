@@ -236,6 +236,66 @@ def test_glued_shorthands_pipeline_keywords() -> None:
         assert keywords == expected, f"{query!r} -> {keywords!r}"
 
 
+def test_laptop_sinh_vien_budget_no_usecase_filter() -> None:
+    from cps_bot.browse.category_resolver import _category_match_index
+
+    _category_match_index.cache_clear()
+    text = "Laptop cho sinh viên tầm 15 triệu"
+    req = resolve_category_filter_request(text)
+    assert req is not None
+    assert req.page_path == "laptop/sinh-vien.html"
+    assert not req.dynamic_filter
+    assert not req.matched_filters
+    url = build_category_filter_url(req, resolve_filter_price(text))
+    assert url.startswith("laptop/sinh-vien.html?price=")
+    assert "nhu_cau_su_dung" not in url
+    assert "laptop_special_feature" not in url
+
+
+def test_laptop_gaming_segment_browse() -> None:
+    from cps_bot.browse.category_resolver import _category_match_index
+
+    _category_match_index.cache_clear()
+    for text in ("Laptop Gaming", "Laptop Gaming tầm 50 triệu"):
+        req = resolve_category_filter_request(text)
+        assert req is not None, text
+        assert req.page_path == "laptop/gaming.html", text
+        assert not req.dynamic_filter, text
+        assert not req.matched_filters, text
+        url = build_category_filter_url(req, resolve_filter_price(text))
+        assert url.startswith("laptop/gaming.html"), text
+        assert "nhu_cau_su_dung" not in url, text
+        assert "laptop_special_feature" not in url, text
+        if "50 triệu" in text:
+            assert "price=" in url, text
+
+
+def test_laptop_van_phong_segment_browse() -> None:
+    from cps_bot.browse.category_resolver import _category_match_index
+
+    _category_match_index.cache_clear()
+    text = "Laptop văn phòng tầm 20 triệu"
+    req = resolve_category_filter_request(text)
+    assert req is not None
+    assert req.page_path == "laptop/van-phong.html"
+    url = build_category_filter_url(req, resolve_filter_price(text))
+    assert url.startswith("laptop/van-phong.html")
+    assert "nhu_cau_su_dung" not in url
+    assert "man-hinh" not in url
+
+
+def test_laptop_mong_nhe_no_duplicate_usecase_filter() -> None:
+    from cps_bot.browse.category_resolver import _category_match_index
+
+    _category_match_index.cache_clear()
+    text = "Laptop mỏng nhẹ tầm 18 triệu"
+    req = resolve_category_filter_request(text)
+    assert req is not None
+    assert req.page_path == "laptop/mong-nhe.html"
+    url = build_category_filter_url(req, resolve_filter_price(text))
+    assert "nhu_cau_su_dung" not in url
+
+
 if __name__ == "__main__":
     test_case2_bare_5_trieu_budget_range()
     test_case3_iphone_under_20_trieu_apple_filter()
@@ -252,4 +312,8 @@ if __name__ == "__main__":
     test_compare_sides_resolve_distinct_products()
     test_compare_sides_with_abbrev_resolve()
     test_glued_shorthands_pipeline_keywords()
+    test_laptop_sinh_vien_budget_no_usecase_filter()
+    test_laptop_gaming_segment_browse()
+    test_laptop_van_phong_segment_browse()
+    test_laptop_mong_nhe_no_duplicate_usecase_filter()
     print("OK — query routing case tests passed")

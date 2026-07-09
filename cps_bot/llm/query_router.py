@@ -120,6 +120,17 @@ def _rule_route(text: str) -> QueryRoute:
     constraint = parse_budget_constraint(original)
     filter_price = resolve_filter_price(original)
 
+    from cps_bot.cps.cps_api import is_combo_accessory_query
+
+    if is_combo_accessory_query(original) and _looks_like_specific_product(original):
+        search_kw = _product_search_keywords(original)
+        return QueryRoute(
+            mode="product_search",
+            search_keywords=search_kw,
+            confidence=0.95,
+            source="rule",
+        )
+
     if is_category_filter_browse_query(original):
         req = resolve_category_filter_request(original)
         if req:
@@ -148,6 +159,28 @@ def _rule_route(text: str) -> QueryRoute:
             source="rule",
             price_min=constraint.min_vnd if constraint else None,
             price_max=constraint.max_vnd if constraint else None,
+        )
+
+    from cps_bot.cps.cps_api import is_stock_availability_query
+
+    if is_stock_availability_query(original) and _looks_like_specific_product(original):
+        search_kw = _product_search_keywords(original)
+        return QueryRoute(
+            mode="product_search",
+            search_keywords=search_kw,
+            confidence=0.92,
+            source="rule",
+        )
+
+    from cps_bot.cps.cps_installment import is_installment_query
+
+    if is_installment_query(original) and _looks_like_specific_product(original):
+        search_kw = _product_search_keywords(original)
+        return QueryRoute(
+            mode="product_search",
+            search_keywords=search_kw,
+            confidence=0.95,
+            source="rule",
         )
 
     if re.search(r"\bpocket\s*\d+\b", original, re.I):

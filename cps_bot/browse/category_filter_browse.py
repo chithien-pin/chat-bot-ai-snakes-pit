@@ -169,6 +169,33 @@ _LAPTOP_DEVICE_HINT_RE = re.compile(
     r"máy làm|may lam|máy chạy|may chay|designer|render)\b",
     re.IGNORECASE,
 )
+_LAPTOP_SUBCATEGORY_PAGE_RE = re.compile(
+    r"^laptop/(?:"
+    r"gaming|sinh-vien|do-hoa|mong-nhe|cam-ung|van-phong|ai|"
+    r"core-i[3579]|laptop-(?:13|14|15-6|16)-inch"
+    r")\.html$",
+    re.IGNORECASE,
+)
+_LAPTOP_SUBCATEGORY_ATTR_KEYS = frozenset({"nhu_cau_su_dung", "laptop_special_feature"})
+# Segment laptop có trang con riêng — không gắn nhu_cau_su_dung/laptop_special_feature.
+_LAPTOP_SEGMENT_BROWSE: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"(?=.*\b(?:laptop|lap top|notebook)\b)(?=.*\bgaming\b)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "Laptop Gaming",
+        "laptop/gaming.html",
+    ),
+    (
+        re.compile(
+            r"(?=.*\b(?:laptop|lap top|notebook)\b)(?=.*\bvan\s+phong\b)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "Laptop Văn phòng",
+        "laptop/van-phong.html",
+    ),
+)
 # Danh mục khác đã rõ → không ép về laptop
 _NON_LAPTOP_DEVICE_RE = re.compile(
     r"\b(?:điện thoại|dien thoai|smartphone|máy ảnh|may anh|camera|"
@@ -178,7 +205,34 @@ _NON_LAPTOP_DEVICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 _SCREEN_SIZE_ATTR_KEY = "screen_size"
+
+
+def _is_laptop_subcategory_page(page_path: str) -> bool:
+    """Trang con laptop (gaming, sinh viên…) — không gắn thêm attribute filter."""
+    return bool(_LAPTOP_SUBCATEGORY_PAGE_RE.match((page_path or "").strip()))
+
+
+def _strip_laptop_subcategory_attribute_filters(
+    page_path: str,
+    matches: list[tuple[str, list[str], list[str]]],
+) -> list[tuple[str, list[str], list[str]]]:
+    if not _is_laptop_subcategory_page(page_path):
+        return matches
+    return [item for item in matches if item[0] not in _LAPTOP_SUBCATEGORY_ATTR_KEYS]
+
+
+def _laptop_usecase_blocked(text: str, nice_uri: str) -> bool:
+    """Không map usecase attribute khi câu đã chỉ segment có trang con."""
+    norm = _norm_filter_text(text)
+    if nice_uri == "gaming" and re.search(r"\blaptop\b", norm) and re.search(r"\bgaming\b", norm):
+        return True
+    if nice_uri == "do-hoa-ky-thuat" and re.search(r"\blaptop\b", norm) and re.search(
+        r"\b(?:do hoa|đo hoa|do hoa ky thuat|đồ họa)\b", norm
+    ):
+        return True
+    return False
 
 
 @dataclass
@@ -577,6 +631,8 @@ def _laptop_usecase_matches(text: str) -> list[tuple[str, list[str], list[str]]]
     matched: list[tuple[str, list[str], list[str]]] = []
     seen_uris: set[str] = set()
     for pattern, nice_uri, label in _LAPTOP_USECASE_BROWSE:
+        if _laptop_usecase_blocked(original, nice_uri):
+            continue
         if pattern.search(original) and nice_uri not in seen_uris:
             matched.append(("nhu_cau_su_dung", [nice_uri], [label]))
             seen_uris.add(nice_uri)
@@ -622,6 +678,32 @@ def _resolve_laptop_usecase_browse(text: str) -> CategoryFilterRequest | None:
     )
 
 
+def _resolve_laptop_segment_browse(text: str) -> CategoryFilterRequest | None:
+    """
+    Laptop + segment có trang con (gaming, văn phòng…) → browse URL trực tiếp.
+    """
+    original = (text or "").strip()
+    if not original or _NON_LAPTOP_DEVICE_RE.search(original):
+        return None
+    if not _LAPTOP_DEVICE_HINT_RE.search(original):
+        return None
+
+    norm = _norm_filter_text(original)
+    for pattern, menu_name, page_path in _LAPTOP_SEGMENT_BROWSE:
+        if pattern.search(norm):
+            return CategoryFilterRequest(
+                category_id="380",
+                menu_name=menu_name,
+                category_name=menu_name,
+                dynamic_filter="",
+                matched_filters=[],
+                is_subcategory_menu=True,
+                page_path=page_path,
+                match_reason=f"laptop_segment:{page_path}",
+            )
+    return None
+
+
 def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
     """
     Phân tích câu hỏi → category + dynamic filter nếu có thể browse qua GraphQL filter.
@@ -633,6 +715,10 @@ def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
     brand_hit = _resolve_brand_subcategory_browse(original)
     if brand_hit:
         return brand_hit
+
+    segment_hit = _resolve_laptop_segment_browse(original)
+    if segment_hit:
+        return segment_hit
 
     cat_hit = resolve_category_match(original)
     if not cat_hit:
@@ -670,13 +756,18 @@ def resolve_category_filter_request(text: str) -> CategoryFilterRequest | None:
             ],
         ]
     attr_matches = _prune_redundant_attribute_matches(page_path, attr_matches)
+    attr_matches = _strip_laptop_subcategory_attribute_filters(page_path, attr_matches)
 
     # Laptop: câu tả nhu cầu (designer/3D…) khớp nhu_cau_su_dung dù token không trùng label
-    if category_id == "380" and not any(k == "nhu_cau_su_dung" for k, _, _ in attr_matches):
+    if (
+        category_id == "380"
+        and not _is_laptop_subcategory_page(page_path)
+        and not any(k == "nhu_cau_su_dung" for k, _, _ in attr_matches)
+    ):
         usecase = _laptop_usecase_matches(original)
         if usecase:
             attr_matches = usecase + attr_matches
-    is_subcategory = (
+    is_subcategory = _is_laptop_subcategory_page(page_path) or (
         len(menu_name.split()) >= 2
         and not is_price_filter_menu_name(menu_name)
         and not is_used_product_menu_name(menu_name)
@@ -740,6 +831,13 @@ def is_category_filter_browse_query(text: str) -> bool:
     value = text or ""
     if _POLICY_CONTEXT_RE.search(value):
         return False
+    from cps_bot.cps.cps_api import is_combo_accessory_query
+
+    if is_combo_accessory_query(value):
+        from cps_bot.llm.query_router import _looks_like_specific_product
+
+        if _looks_like_specific_product(value):
+            return False
     if (
         _SPECIFIC_PRODUCT_QUERY_RE.search(value)
         and not _CATEGORY_BROWSE_INTENT_RE.search(value)

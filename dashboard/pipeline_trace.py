@@ -37,6 +37,8 @@ def _message_id(row: dict[str, Any]) -> str:
 def _infer_keyword_method(row: dict[str, Any]) -> str:
     if row.get("compare_mode"):
         return "compare_extract"
+    if row.get("keyword_source") == "color_follow_up" or row.get("query_route_source") == "color_follow_up":
+        return "color_follow_up"
     kw_ms = row.get("latency_keyword_ms")
     if kw_ms is not None and int(kw_ms) <= 30:
         return "local_heuristic"
@@ -48,6 +50,7 @@ def _infer_keyword_method(row: dict[str, Any]) -> str:
 def _keyword_method_label(method: str) -> str:
     return {
         "local_heuristic": "Heuristic cục bộ (regex / từ điển)",
+        "color_follow_up": "Follow-up màu — reuse keyword session",
         "llm_extract": "LLM bóc tách từ khóa",
         "compare_extract": "Trích từ câu so sánh",
         "auto": "Tự động (local hoặc LLM)",
@@ -168,6 +171,7 @@ def build_pipeline_trace(row: dict[str, Any]) -> dict[str, Any]:
                 "platform": row.get("platform"),
                 "chat_id": row.get("chat_id"),
                 "user_id": row.get("user_id"),
+                "user_question": row.get("user_question") or "",
                 "question_len": row.get("question_len"),
                 "is_follow_up": row.get("is_follow_up"),
                 "thread_key": row.get("thread_key"),
@@ -359,6 +363,7 @@ def _pack_trace(
         "accounted_latency_ms": accounted,
         "search_keywords": row.get("search_keywords") or "",
         "resolve_source": row.get("resolve_source") or "",
+        "user_question": row.get("user_question") or "",
         "steps": steps,
     }
 

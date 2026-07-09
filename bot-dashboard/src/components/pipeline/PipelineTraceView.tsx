@@ -195,6 +195,7 @@ function DetailBlock({ details }: { details: Record<string, unknown> }) {
           prompt_tokens: "tokens in",
           completion_tokens: "tokens out",
           total_tokens: "tokens total",
+          user_question: "Câu hỏi user",
         }[key] || key.replace(/_/g, " ");
         const display =
           typeof value === "object" ? JSON.stringify(value) : String(value);
@@ -216,6 +217,12 @@ export function PipelineTraceView({ trace }: { trace: PipelineTrace }) {
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">Pipeline trace</p>
           <h2 className="mt-1 text-lg font-bold">{fmtTs(trace.ts)}</h2>
+          {trace.user_question ? (
+            <p className="mt-2 max-w-2xl text-sm font-medium text-text-primary">
+              <span className="text-text-muted">User: </span>
+              {trace.user_question}
+            </p>
+          ) : null}
           <p className="mt-1 text-sm text-text-secondary">
             {trace.platform} · <span className="font-mono text-brand">{trace.search_keywords || "—"}</span>
           </p>

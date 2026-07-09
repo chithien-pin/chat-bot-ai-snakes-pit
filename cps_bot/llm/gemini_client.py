@@ -387,6 +387,18 @@ _INSTALLMENT_CONTEXT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_COMBO_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"phụ kiện mua kèm|phu kien mua kem|"
+    r"phụ kiện mua cùng|phu kien mua cung|"
+    r"phụ kiện kèm|phu kien kem|"
+    r"phụ kiện cho|phu kien cho|"
+    r"mua kèm|mua kem|mua cùng|mua cung|mua chung|"
+    r"mua thêm giảm|mua them giam|"
+    r"combo|bundle|cross[- ]?sell"
+    r")\b",
+    re.IGNORECASE,
+)
 # Nhu cầu sử dụng — đưa vào câu hỏi Gemini, không gửi API search
 _USAGE_CONTEXT_RE = re.compile(
     r"\b("
@@ -813,6 +825,44 @@ def _has_cps_search_signal(text: str) -> bool:
     return False
 
 
+_SYNONYM_USAGE_RE = re.compile(
+    r"\b(?:"
+    r"có thể|co the|được|duoc|nên|nen|dùng|dung|mang|phù hợp|phu hop|"
+    r"mang lên|mang len|lên máy bay|len may bay|"
+    r"tư vấn|tu van|gợi ý|goi y|nên mua|nen mua"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _can_skip_llm_keyword_normalize(
+    original: str,
+    local_keywords: str,
+    conversation_context: str = "",
+) -> bool:
+    """
+    Keyword cục bộ đủ tốt — skip LLM normalize (latency).
+    Câu mơ hồ / đồng nghĩa / cần expand vẫn trả False.
+    """
+    if not local_keywords or not _local_keywords_usable(original, local_keywords):
+        return False
+    if needs_query_expansion(original):
+        if _has_abbrev_tokens(original):
+            return False
+        # Noise giá/tồn đã bóc sạch → keyword cục bộ đủ, skip LLM
+        if not (_has_search_noise(original) and not _has_search_noise(local_keywords)):
+            return False
+    if len((original or "").split()) >= 4 and _SYNONYM_USAGE_RE.search(original):
+        return False
+    if conversation_context and (
+        is_contextual_follow_up(original, conversation_context)
+        or is_affirmative_follow_up(original)
+    ):
+        if not _mentions_new_product(original):
+            return False
+    return True
+
+
 def should_llm_normalize_keywords(
     text: str,
     conversation_context: str = "",
@@ -1020,6 +1070,7 @@ def _strip_search_noise(text: str) -> str:
     cleaned = _TRADE_CONTEXT_RE.sub(" ", cleaned)
     cleaned = _WARRANTY_CONTEXT_RE.sub(" ", cleaned)
     cleaned = _INSTALLMENT_CONTEXT_RE.sub(" ", cleaned)
+    cleaned = _COMBO_CONTEXT_RE.sub(" ", cleaned)
     cleaned = re.sub(
         r"^(?:tìm|tim)\s+(?:cửa hàng|cua hang|shop)\s+(?:gần nhất|gan nhat)\s+"
         r"(?:có đủ|co du|có|có)\s+combo\s+",
@@ -1472,6 +1523,37 @@ def should_reuse_product_identity(
     return False
 
 
+def try_color_follow_up_search_keywords(
+    user_question: str,
+    *,
+    last_keywords: str = "",
+    last_product_name: str = "",
+    conversation_context: str = "",
+) -> str | None:
+    """Follow-up hỏi màu — reuse keyword session, skip LLM router/extract."""
+    from cps_bot.cps.cps_api import is_color_variant_list_query
+
+    text = (user_question or "").strip()
+    if not text or not is_color_variant_list_query(text):
+        return None
+
+    kw = (last_keywords or "").strip()
+    pname = (last_product_name or "").strip()
+    if not kw and conversation_context:
+        return _reuse_keywords_from_context(text, conversation_context)
+
+    if not kw:
+        return None
+    if not identity_compatible_with_session(
+        text,
+        last_keywords=kw,
+        last_product_name=pname,
+    ):
+        return None
+    logger.info("Từ khóa (follow-up màu): %r → %r", text, kw)
+    return kw
+
+
 def _try_reuse_context_keywords(
     original: str,
     conversation_context: str,
@@ -1483,6 +1565,12 @@ def _try_reuse_context_keywords(
     ctx_product = context_product_text(conversation_context)
     if product_context_conflict(original, ctx_product):
         return None
+    from cps_bot.cps.cps_api import is_color_variant_query
+
+    if is_color_variant_query(original):
+        reused = _reuse_keywords_from_context(original, conversation_context)
+        if reused:
+            return reused
     if references_prior_product(original):
         return _reuse_keywords_from_context(original, conversation_context)
     if is_affirmative_follow_up(original):
@@ -1588,6 +1676,16 @@ def extract_search_keywords(
         logger.info("Từ khóa (stock browse): %r → %r", original, keywords)
         return keywords
 
+    from cps_bot.cps.cps_api import is_combo_accessory_query
+
+    if is_combo_accessory_query(original):
+        keywords = _normalize_keyword_line(
+            _strip_search_noise(_replace_abbrev_tokens(original))
+        )
+        if keywords:
+            logger.info("Từ khóa (combo/phụ kiện): %r → %r", original, keywords)
+            return keywords
+
     from cps_bot.browse.category_filter_browse import (
         build_category_filter_url,
         is_category_filter_browse_query,
@@ -1606,6 +1704,13 @@ def extract_search_keywords(
         keywords = strip_budget_phrases_for_keywords(original)
         logger.info("Từ khóa (budget browse): %r → %r", original, keywords)
         return keywords
+
+    color_session_kw = try_color_follow_up_search_keywords(
+        original,
+        conversation_context=conversation_context,
+    )
+    if color_session_kw:
+        return color_session_kw
 
     if conversation_context and is_affirmative_follow_up(original):
         reused = _try_reuse_context_keywords(original, conversation_context)
@@ -1636,6 +1741,10 @@ def extract_search_keywords(
 
     if _has_abbrev_tokens(original) and local_keywords:
         logger.info("Từ khóa (từ điển): %r → %r", original, local_keywords)
+        return local_keywords
+
+    if _can_skip_llm_keyword_normalize(original, local_keywords, conversation_context):
+        logger.info("Từ khóa (bóc cục bộ, skip LLM): %r → %r", original, local_keywords)
         return local_keywords
 
     if use_llm and should_llm_normalize_keywords(original, conversation_context):

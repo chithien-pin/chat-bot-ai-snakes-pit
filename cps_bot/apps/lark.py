@@ -18,7 +18,6 @@ import logging
 import re
 import sys
 import threading
-import time
 from typing import Any
 
 import lark_oapi as lark
@@ -35,11 +34,8 @@ from lark_oapi.api.im.v1 import (
 from config import (
     BYTEPLUS_API_KEY,
     DEEPSEEK_API_KEY,
-    FAST_BROWSE_REPLY,
     GEMINI_API_KEY,
-    LLM_MAX_SEARCH_RESULTS,
     LLM_PROVIDER,
-    SLIM_LLM_PAYLOAD,
     LARK_API_DOMAIN,
     LARK_APP_ID,
     LARK_APP_SECRET,
@@ -48,6 +44,7 @@ from config import (
     LARK_BOT_MENTION_NAMES,
 )
 from cps_bot.core.chat_help import chat_help_plain
+from cps_bot.core.chat_pipeline import process_chat_message
 from cps_bot.feedback.feedback import (
     FEEDBACK_HELPFUL,
     build_lark_card_action_response,
@@ -61,61 +58,32 @@ from cps_bot.feedback.feedback import (
 )
 from cps_bot.feedback.lark_bitable import bitable_is_configured, save_feedback_to_bitable
 from cps_bot.feedback.lark_feedback_notify import build_lark_topic_link, send_feedback_admin_notification
+from cps_bot.lark.compare_card import build_lark_compare_card
+from cps_bot.browse.compare_reply import build_compare_summary
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
 from cps_bot.lark.lark_ws_patch import apply_lark_ws_card_patch
-from cps_bot.cps.cps_api import (
-    attach_shop_stock_to_payload,
-    classify_question_scenarios,
-    enrich_payload_for_scenarios,
-    fetch_product_for_query,
-    is_color_variant_list_query,
-    is_stock_status_browse_query,
-    should_attach_shop_stock,
-)
-from cps_bot.core.api_trace import api_trace_scope, trace_phase
 from cps_bot.core.conversation import (
-    append_turn,
-    clear_session,
+    clear_all_sessions_for_chat,
     format_context_block,
     get_any_session_in_topic,
-    get_session,
     has_product_context,
     has_thread_conversation,
-    mirror_session_to_chat_level,
     resolve_session,
-    session_scope_key,
 )
-from cps_bot.llm.disambiguation import build_disambiguation_message, resolve_disambiguation_choice
 from cps_bot.llm.gemini_client import (
-    analyze_product_with_meta,
-    extract_compare_product_queries,
     is_affirmative_follow_up,
     is_contextual_follow_up,
-    llm_provider_display_name,
-    needs_query_expansion,
-    references_prior_product,
-    should_reuse_product_identity,
     _mentions_new_product,
 )
-from cps_bot.browse.fast_reply import (
-    build_browse_list_reply,
-    build_color_sibling_reply,
-    can_fast_browse_reply,
-    can_fast_color_sibling_reply,
-    slim_payload_for_llm,
-)
-from cps_bot.core.metrics import emit_metric
 from cps_bot.core.user_display import resolve_lark_user_name
-from cps_bot.llm.message_intent import is_social_message, resolve_message_intent
-from cps_bot.llm.query_router import resolve_pipeline_search_keywords, resolve_query_route
-from cps_bot.browse.budget_browse import is_budget_browse_query
-from cps_bot.core.location_flow import handle_province_gate, shop_question_for_session
-from cps_bot.cps.scraper import build_product_payload, build_response_link_url, format_product_links_appendix, is_browse_list_mode, product_url_from_record, should_attach_product_links_appendix
 from cps_bot.core.session_store import (
     delete_active_topic,
+    delete_active_topics_for_chat,
+    delete_persisted_sessions_for_chat,
+    delete_topic_aliases_for_chat,
     load_active_topics,
     load_session_store,
     load_topic_aliases,
@@ -342,6 +310,64 @@ def _deactivate_topic_by_key(thread_key: str | None, *, chat_id: str = "") -> No
             scope = _topic_scope_key(chat_id, canonical)
             _active_topics.discard(scope)
             delete_active_topic(scope)
+
+
+def clear_lark_chat_runtime(chat_id: str) -> dict[str, int]:
+    """
+    Xóa toàn bộ ngữ cảnh Lark cho một chat — RAM (_sessions, topics, aliases) + SQLite.
+    """
+    cid = (chat_id or "").strip()
+    if not cid:
+        return {"sessions": 0, "active_topics": 0, "topic_aliases": 0}
+
+    ram_sessions = clear_all_sessions_for_chat(_sessions, cid)
+
+    topic_scopes = [s for s in list(_active_topics) if s.startswith(f"{cid}:")]
+    for scope in topic_scopes:
+        _active_topics.discard(scope)
+        delete_active_topic(scope)
+
+    alias_keys = [k for k in list(_topic_alias_map.keys()) if k.startswith(f"{cid}:")]
+    for key in alias_keys:
+        _topic_alias_map.pop(key, None)
+
+    db_topics = delete_active_topics_for_chat(cid)
+    db_aliases = delete_topic_aliases_for_chat(cid)
+    db_sessions = delete_persisted_sessions_for_chat(cid)
+
+    counts = {
+        "sessions": max(ram_sessions, db_sessions),
+        "active_topics": max(len(topic_scopes), db_topics),
+        "topic_aliases": max(len(alias_keys), db_aliases),
+    }
+    logger.info("Đã xóa Lark runtime chat %s: %s", cid, counts)
+    return counts
+
+
+def reset_lark_memory(*, reload_from_db: bool = False) -> dict[str, int]:
+    """
+    Reset toàn bộ state RAM Lark — dùng khi cần xóa hết context in-memory.
+    Mặc định không reload từ SQLite (RAM trống cho tới khi restart hoặc hỏi mới).
+    """
+    global _sessions, _active_topics, _topic_alias_map
+
+    counts = {
+        "sessions": len(_sessions),
+        "active_topics": len(_active_topics),
+        "topic_aliases": len(_topic_alias_map),
+    }
+    _sessions.clear()
+    _active_topics.clear()
+    _topic_alias_map.clear()
+
+    if reload_from_db:
+        _sessions.update(load_session_store())
+        _active_topics.update(load_active_topics())
+        _active_topics.update(rebuild_active_topics_from_sessions(_sessions))
+        _topic_alias_map.update(load_topic_aliases())
+
+    logger.info("Reset Lark memory (reload=%s): cleared %s", reload_from_db, counts)
+    return counts
 
 
 def _message_mentions_bot(msg: lark.im.v1.EventMessage) -> bool:
@@ -651,11 +677,14 @@ async def _cmd_clear(
 ) -> None:
     if not is_allowed_chat(chat_id):
         return
-    clear_session(_sessions, chat_id, user_id, thread_key=thread_key)
-    clear_session(_sessions, chat_id, user_id, thread_key=None)
-    _deactivate_topic_by_key(thread_key, chat_id=chat_id)
+    _ = thread_key
+    counts = clear_lark_chat_runtime(chat_id)
     messenger.reply(
-        "🧹 Đã xóa ngữ cảnh hội thoại. Bạn có thể hỏi sản phẩm mới từ đầu."
+        "🧹 Đã xóa ngữ cảnh hội thoại (RAM + lưu trữ).\n"
+        f"• Session: {counts['sessions']}\n"
+        f"• Topic active: {counts['active_topics']}\n"
+        f"• Topic alias: {counts['topic_aliases']}\n"
+        "Bạn có thể hỏi sản phẩm mới từ đầu."
     )
 
 
@@ -738,487 +767,80 @@ async def process_message(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
     )
     user_question = raw_text
 
-    session = get_session(
-        _sessions,
-        chat_id,
-        user_id,
-        thread_key=thread_key or None,
-    )
-    session_key = session_scope_key(chat_id, user_id, thread_key=thread_key or None)
-
-    pending = session.get("pending_disambiguation") or []
-    disambig_pick = resolve_disambiguation_choice(user_question, pending) if pending else None
-    forced_product_url = ""
-    if disambig_pick:
-        session.pop("pending_disambiguation", None)
-        forced_product_url = product_url_from_record(disambig_pick)
-
-    context_session = resolve_session(
-        _sessions,
-        chat_id,
-        user_id,
-        thread_key=thread_key or None,
-    )
-    conversation_context = format_context_block(context_session)
-    social = is_social_message(user_question)
-    is_follow_up = (
-        not social
-        and is_contextual_follow_up(user_question, conversation_context)
-    )
-    reuse_product_context = not social and (
-        is_follow_up
-        or references_prior_product(user_question)
-        or (
-            has_product_context(context_session)
-            and not _mentions_new_product(user_question)
-        )
-    )
-    last_product = context_session.get("last_product") or {}
-    reuse_product_identity = should_reuse_product_identity(
-        user_question,
-        conversation_context,
-        last_keywords=context_session.get("last_keywords") or "",
-        last_product_name=last_product.get("name") or "",
-    )
-    started = time.perf_counter()
     user_name = ""
     if user_id and _lark_client is not None:
         user_name = resolve_lark_user_name(_lark_client, str(user_id))
-    metric_data: dict[str, object] = {
-        "platform": "lark",
-        "chat_id": str(chat_id),
-        "user_id": str(user_id or ""),
-        "user_name": user_name,
-        "thread_key": thread_key,
-        "process_reason": process_reason,
-        "is_follow_up": is_follow_up,
-        "reuse_product_context": reuse_product_context,
-        "reuse_product_identity": reuse_product_identity,
-        "question_len": len(user_question),
-        "llm_provider": LLM_PROVIDER,
-    }
 
-    intent = resolve_message_intent(
+    async def on_status(text: str) -> None:
+        messenger.update_status(text)
+
+    result = await process_chat_message(
         user_question,
-        conversation_context=conversation_context,
-        has_product_context=has_product_context(context_session),
-        is_follow_up=is_follow_up,
-        has_pending_disambiguation=bool(pending),
-        has_pending_province=bool(session.get("pending_province_for")),
-    )
-    if intent.kind != "product" and intent.reply:
-        metric_data["intent"] = intent.kind
-        metric_data["status"] = f"intent_{intent.kind}"
-        bot_mid = messenger.send_final(intent.reply)
-        _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-        append_turn(
-            session,
-            user=user_question,
-            assistant=intent.reply,
-            keywords="",
-            product_name="",
-            product_url="",
-            session_key=session_key,
-        )
-        emit_metric(
-            "chat_message",
-            **metric_data,
-            total_latency_ms=int((time.perf_counter() - started) * 1000),
-        )
-        return
-
-    province_gate = handle_province_gate(
-        user_question,
-        session,
-        has_product_context=has_product_context(context_session),
-    )
-    if province_gate.should_ask:
-        session["pending_province_for"] = province_gate.pending_kind
-        metric_data["status"] = "ask_province"
-        metric_data["pending_province_for"] = province_gate.pending_kind
-        bot_mid = messenger.send_final(province_gate.reply)
-        _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-        append_turn(
-            session,
-            user=user_question,
-            assistant=province_gate.reply,
-            keywords="",
-            product_name="",
-            product_url="",
-            session_key=session_key,
-        )
-        emit_metric(
-            "chat_message",
-            **metric_data,
-            total_latency_ms=int((time.perf_counter() - started) * 1000),
-        )
-        return
-
-    query_province_id = province_gate.province_id
-    resume_shop_stock = session.pop("resume_shop_stock", False)
-    resume_store_locator = session.pop("resume_store_locator", False)
-    shop_question = (
-        shop_question_for_session(session, user_question)
-        if resume_shop_stock or resume_store_locator
-        else user_question
+        platform="lark",
+        chat_id=chat_id,
+        user_id=str(user_id or "0"),
+        user_name=user_name,
+        thread_key=thread_key or None,
+        session_store=_sessions,
+        message_id=message_id or None,
+        max_reply_length=MAX_MESSAGE_LENGTH,
+        mirror_to_chat_level=True,
+        cache_feedback=False,
+        on_status=on_status,
+        error_detail_in_reply=True,
+        extra_metrics={
+            "thread_key": thread_key,
+            "process_reason": process_reason,
+        },
     )
 
-    messenger.update_status("🔍 Đang tìm kiếm thông tin...")
-
-    product_url = ""
-    response_link_url = ""
-    try:
-        compare_queries = extract_compare_product_queries(user_question)
-        t0 = time.perf_counter()
-        kw_context = (
-            conversation_context if reuse_product_context else ""
-        )
-        if compare_queries:
-            search_keywords = compare_queries[0]
-        else:
-            stock_browse = is_stock_status_browse_query(user_question)
-            budget_browse = is_budget_browse_query(user_question)
-            query_route = await asyncio.to_thread(
-                resolve_query_route,
-                user_question,
-                conversation_context=kw_context,
-            )
-            metric_data["query_route_mode"] = query_route.mode
-            metric_data["query_route_source"] = query_route.source
-            metric_data["query_route_confidence"] = query_route.confidence
-
-            if (
-                needs_query_expansion(user_question)
-                and not stock_browse
-                and not budget_browse
-                and query_route.mode != "category_browse"
-            ):
-                messenger.update_status("✍️ Đang hiểu câu hỏi của bạn...")
-            search_keywords = await asyncio.to_thread(
-                resolve_pipeline_search_keywords,
-                user_question,
-                query_route,
-                conversation_context=kw_context,
-            )
-            budget_browse = budget_browse or query_route.mode == "budget_browse"
-        metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
-        stock_browse = is_stock_status_browse_query(user_question)
-        budget_browse = is_budget_browse_query(user_question)
-        if not search_keywords and not stock_browse and not budget_browse:
-            clarify = resolve_message_intent(
-                user_question,
-                conversation_context=conversation_context,
-                has_product_context=has_product_context(context_session),
-                is_follow_up=is_follow_up,
-            ).reply
-            bot_mid = messenger.send_final(
-                clarify or "😔 Không hiểu được sản phẩm bạn cần tìm."
-            )
-            _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-            metric_data["status"] = "keyword_empty"
-            emit_metric(
-                "chat_message",
-                **metric_data,
-                total_latency_ms=int((time.perf_counter() - started) * 1000),
-            )
-            return
-
-        logger.info(
-            "Tìm sản phẩm: keywords=%r | câu gốc=%r",
-            search_keywords,
-            user_question,
-        )
-
-        fallback_url = ""
-        fallback_product_id: str | int = ""
-        session_fallback_parent_id: str | int = ""
-        session_last_keywords = context_session.get("last_keywords") or ""
-        session_last_product_name = last_product.get("name") or ""
-        if forced_product_url:
-            fallback_url = forced_product_url
-        elif reuse_product_identity or (
-            is_color_variant_list_query(user_question)
-            and last_product.get("product_id")
-            and has_product_context(context_session)
-        ):
-            fallback_url = last_product.get("url") or ""
-            fallback_product_id = last_product.get("product_id") or ""
-            session_fallback_parent_id = last_product.get("parent_id") or ""
-
-        if (stock_browse or budget_browse) and not search_keywords:
-            messenger.update_status("🔍 Đang tìm sản phẩm phù hợp...")
-        else:
-            messenger.update_status(f"🔍 Đang tìm: {search_keywords}...")
-        response_link_url = ""
-        t1 = time.perf_counter()
-        compare_products: list[dict[str, Any]] = []
-        if compare_queries:
-            messenger.update_status("⚖️ Đang so sánh 2 sản phẩm...")
-            fetch_stats: dict[str, Any] = {}
-            for kw in compare_queries[:2]:
-                sub_results, sub_detail, sub_stats = await fetch_product_for_query(
-                    kw,
-                    user_message=user_question,
-                )
-                for key, val in sub_stats.items():
-                    if isinstance(val, int):
-                        fetch_stats[key] = int(fetch_stats.get(key, 0)) + val
-                    elif key == "resolve_source" and val:
-                        fetch_stats[key] = val
-                    elif key == "api_calls_detail":
-                        from cps_bot.core.api_trace import merge_api_calls_detail
-
-                        merge_api_calls_detail(fetch_stats, sub_stats)
-                if sub_detail:
-                    compare_products.append(sub_detail)
-            results = []
-            detail = compare_products[0] if compare_products else {}
-        else:
-            results, detail, fetch_stats = await fetch_product_for_query(
-                search_keywords,
-                user_message=user_question,
-                fallback_url=fallback_url,
-                fallback_product_id=fallback_product_id,
-                session_fallback_parent_id=session_fallback_parent_id,
-                session_last_keywords=session_last_keywords,
-                session_last_product_name=session_last_product_name,
-            )
-        metric_data["latency_fetch_ms"] = int((time.perf_counter() - t1) * 1000)
-        metric_data.update(fetch_stats)
-        if fetch_stats.get("resolved_filter_url"):
-            metric_data["search_keywords"] = fetch_stats["resolved_filter_url"]
-        if compare_queries and len(compare_products) < 2:
-            bot_mid = messenger.send_final(
-                "😔 Chưa tìm đủ 2 sản phẩm để so sánh.\n"
-                "Thử gõ rõ tên từng máy, vd: So sánh iPhone 16 Pro Max và S25 Ultra"
-            )
-            _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-            metric_data["status"] = "compare_not_found"
-            emit_metric(
-                "chat_message",
-                **metric_data,
-                total_latency_ms=int((time.perf_counter() - started) * 1000),
-            )
-            return
-        if not results and not detail:
-            scenarios = classify_question_scenarios(shop_question)
-            if scenarios.get("store_locator") or resume_store_locator:
-                detail = {
-                    "name": "Cửa hàng CellphoneS",
-                    "product_id": "",
-                    "url": "",
-                    "price": "",
-                }
-            else:
-                hint = (
-                    f"\n\nTừ khóa đã tìm: {search_keywords}"
-                    if search_keywords != user_question
-                    else ""
-                )
-                bot_mid = messenger.send_final(
-                    "😔 Không tìm thấy sản phẩm phù hợp trên CellphoneS.\n"
-                    "Thử hỏi lại với tên sản phẩm cụ thể hơn nhé!"
-                    f"{hint}"
-                )
-                _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-                metric_data["status"] = "not_found"
-                metric_data["search_keywords"] = search_keywords
-                emit_metric(
-                    "chat_message",
-                    **metric_data,
-                    total_latency_ms=int((time.perf_counter() - started) * 1000),
-                )
-                return
-
-        if fetch_stats.get("ambiguous_search") and len(results) >= 2:
-            session["pending_disambiguation"] = results[:3]
-            metric_data["ambiguous_search"] = True
-
-        messenger.update_status(
-            "📦 Đã tìm thấy sản phẩm. Đang phân tích dữ liệu..."
-        )
-        product_url = product_url_from_record(detail) or (
-            product_url_from_record(results[0]) if results else ""
-        )
-        if compare_products:
-            payload = {
-                "compare_mode": True,
-                "compare_products": compare_products,
-                "primary_product": compare_products[0],
-                "search_results": [
-                    {
-                        "name": p.get("name", ""),
-                        "price": p.get("price", ""),
-                        "url": p.get("url", ""),
-                        "product_id": p.get("product_id", ""),
-                    }
-                    for p in compare_products
-                ],
-            }
-            response_link_url = product_url_from_record(compare_products[0]) or ""
-            metric_data["compare_mode"] = True
-        else:
-            payload = build_product_payload(results, detail)
-            response_link_url = build_response_link_url(
-                search_results=results,
-                detail=detail,
-                search_keywords=search_keywords,
-            )
-
-        shop_ctx = None
-        if (
-            detail.get("product_id")
-            and not detail.get("stock_browse_list_mode")
-            and not detail.get("budget_browse_list_mode")
-            and should_attach_shop_stock(
-                shop_question,
-                resume=resume_shop_stock,
-                reuse_product_context=reuse_product_context,
-            )
-        ):
-            metric_data["shop_stock_trigger"] = True
-            messenger.update_status("🏪 Đang kiểm tra tồn cửa hàng...")
-            async with api_trace_scope(metric_data):
-                with trace_phase("shop_stock"):
-                    shop_ctx = await attach_shop_stock_to_payload(
-                        payload,
-                        detail,
-                        user_question=shop_question,
-                        province_id=query_province_id,
-                    )
-        if shop_ctx:
-            metric_data["shop_stock_scenario"] = True
-            metric_data["shop_stock_matched"] = shop_ctx.get("matched_shops_count", 0)
-
-        browse_list = is_browse_list_mode(detail)
-        scenario_flags: dict[str, bool] = {}
-        if not browse_list:
-            scenario_flags = await enrich_payload_for_scenarios(
-                payload,
-                detail,
-                user_question=shop_question,
-                province_id=query_province_id,
-                api_trace_stats=metric_data,
-            )
-            if scenario_flags:
-                metric_data["scenario_enrich"] = scenario_flags
-
-        t2 = time.perf_counter()
-        gemini_meta: dict[str, Any] = {}
-        if can_fast_color_sibling_reply(payload, user_question):
-            answer = build_color_sibling_reply(
-                user_question,
-                payload,
-                response_link_url=response_link_url,
-            )
-            metric_data["fast_color_sibling_reply"] = True
-            metric_data["gemini_model"] = "template"
-        elif FAST_BROWSE_REPLY and can_fast_browse_reply(detail, payload.get("search_results") or []):
-            answer = build_browse_list_reply(
-                user_question,
-                detail,
-                payload.get("search_results") or [],
-                response_link_url=response_link_url,
-            )
-            metric_data["fast_browse_reply"] = True
-            metric_data["gemini_model"] = "template"
-        else:
-            llm_label = llm_provider_display_name()
-            messenger.update_status(f"🤖 Đang phân tích với {llm_label}...")
-            llm_payload = (
-                slim_payload_for_llm(payload, max_results=LLM_MAX_SEARCH_RESULTS)
-                if SLIM_LLM_PAYLOAD
-                else payload
-            )
-            answer, gemini_meta = await asyncio.to_thread(
-                analyze_product_with_meta,
-                user_question,
-                llm_payload,
-                conversation_context,
-            )
-        metric_data["latency_gemini_ms"] = int((time.perf_counter() - t2) * 1000)
-        if gemini_meta:
-            metric_data.update(
-                {
-                    "gemini_model": gemini_meta.get("model", ""),
-                    "prompt_tokens": int(gemini_meta.get("prompt_tokens", 0) or 0),
-                    "completion_tokens": int(gemini_meta.get("completion_tokens", 0) or 0),
-                    "total_tokens": int(gemini_meta.get("total_tokens", 0) or 0),
-                }
-            )
-        answer = truncate_message(answer)
-        search_list = payload.get("search_results") or []
-        scenarios = payload.get("question_scenarios") or {}
-        if should_attach_product_links_appendix(
-            detail,
-            scenarios=scenarios,
-            compare_mode=bool(metric_data.get("compare_mode")),
-            ambiguous_search=bool(fetch_stats.get("ambiguous_search")),
-            fast_browse_reply=bool(metric_data.get("fast_browse_reply")),
-        ):
-            appendix = format_product_links_appendix(search_list)
-            if appendix and appendix not in answer:
-                answer = truncate_message(f"{answer}{appendix}")
-
-        disambig_msg = (
-            build_disambiguation_message(results)
-            if fetch_stats.get("ambiguous_search")
-            and fetch_stats.get("resolve_source") == "search_results"
-            else ""
-        )
-        if disambig_msg and disambig_msg not in answer:
-            answer = truncate_message(f"{answer}\n\n{disambig_msg}")
-
-        product_name = (detail.get("name") or (results[0].get("name") if results else "") or "").strip()
-        append_turn(
-            session,
-            user=user_question,
-            assistant=answer,
-            keywords=search_keywords,
-            product_name=product_name,
-            product_url=product_url,
-            product_id=detail.get("product_id", ""),
-            parent_product_id=detail.get("parent_id", ""),
-            session_key=session_key,
-        )
-        mirror_session_to_chat_level(_sessions, chat_id, user_id, session)
+    if result.status == "success":
         thread_id_for_link = (msg.thread_id or msg.root_id or "").strip()
-        card = build_lark_interactive_card(
-            answer,
-            product_url=response_link_url,
-            question=user_question,
-            product_name=product_name,
-            thread_id=thread_id_for_link,
-            source_chat_id=chat_id,
-        )
+        if result.use_compare_column_layout and len(result.compare_products) >= 2:
+            summary = result.reply
+            if result.metrics.get("fast_compare_reply"):
+                summary = build_compare_summary(
+                    result.compare_products[:2],
+                    fast=True,
+                )
+            card = build_lark_compare_card(
+                result.compare_products[:2],
+                summary=summary,
+                question=user_question,
+                product_name=result.product_name,
+                product_url=result.response_link_url,
+                thread_id=thread_id_for_link,
+                source_chat_id=chat_id,
+            )
+        else:
+            card = build_lark_interactive_card(
+                result.reply,
+                product_url=result.response_link_url,
+                question=user_question,
+                product_name=result.product_name,
+                thread_id=thread_id_for_link,
+                source_chat_id=chat_id,
+            )
         bot_mid = messenger.send_final_interactive(card)
-        _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-        metric_data["status"] = "success"
-        metric_data["search_keywords"] = search_keywords
-        metric_data["product_id"] = detail.get("product_id", "")
-        metric_data["product_url"] = product_url
-        metric_data["response_link_url"] = response_link_url
-        emit_metric(
-            "chat_message",
-            **metric_data,
-            total_latency_ms=int((time.perf_counter() - started) * 1000),
-        )
-
-    except Exception as exc:
-        logger.exception("Lỗi xử lý tin nhắn Lark: %s", exc)
-        bot_mid = messenger.send_final(
-            "⚠️ Đã xảy ra lỗi khi xử lý yêu cầu.\n"
-            "Vui lòng thử lại sau ít phút.\n\n"
-            f"Chi tiết: {str(exc)[:200]}"
-        )
-        _after_bot_reply(msg, bot_mid, chat_id=chat_id)
-        metric_data["status"] = "error"
-        metric_data["error"] = str(exc)[:200]
-        emit_metric(
-            "chat_message",
-            **metric_data,
-            total_latency_ms=int((time.perf_counter() - started) * 1000),
-        )
+        if not bot_mid and result.use_compare_column_layout:
+            logger.warning(
+                "Compare column card gửi thất bại — fallback card 1 cột"
+            )
+            fallback_card = build_lark_interactive_card(
+                result.reply,
+                product_url=result.response_link_url,
+                question=user_question,
+                product_name=result.product_name,
+                thread_id=thread_id_for_link,
+                source_chat_id=chat_id,
+            )
+            bot_mid = messenger.send_final_interactive(fallback_card)
+        if not bot_mid:
+            logger.warning("Interactive card gửi thất bại — fallback text")
+            bot_mid = messenger.send_final(result.reply)
+    else:
+        bot_mid = messenger.send_final(result.reply)
+    _after_bot_reply(msg, bot_mid, chat_id=chat_id)
 
 
 def _start_async_loop() -> asyncio.AbstractEventLoop:

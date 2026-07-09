@@ -136,6 +136,41 @@ FAST_BROWSE_REPLY = os.getenv("FAST_BROWSE_REPLY", "1").strip().lower() in {
     "yes",
     "on",
 }
+# Câu hỏi giá/KM 1 SP cụ thể — template từ payload, không gọi LLM phân tích
+FAST_PRICE_REPLY = os.getenv("FAST_PRICE_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# Câu hỏi tồn cửa hàng thuần — template từ shops_stock, không LLM
+FAST_SHOP_STOCK_REPLY = os.getenv("FAST_SHOP_STOCK_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# So sánh 2 SP — template 2 cột, không LLM
+FAST_COMPARE_REPLY = os.getenv("FAST_COMPARE_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# Trả góp 1 SP — template từ payload installment, không LLM phân tích
+FAST_INSTALLMENT_REPLY = os.getenv("FAST_INSTALLMENT_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# Phụ kiện/combo mua kèm 1 SP — template, không LLM phân tích
+FAST_COMBO_REPLY = os.getenv("FAST_COMBO_REPLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 SLIM_LLM_PAYLOAD = os.getenv("SLIM_LLM_PAYLOAD", "1").strip().lower() in {
     "1",
     "true",

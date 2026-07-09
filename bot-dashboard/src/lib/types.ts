@@ -16,6 +16,7 @@ export type PipelineTrace = {
   accounted_latency_ms: number;
   search_keywords: string;
   resolve_source: string;
+  user_question?: string;
   steps: PipelineStep[];
 };
 
@@ -105,6 +106,7 @@ export type MessageRow = {
   shop_stock_scenario?: boolean;
   shop_stock_trigger?: boolean;
   question_len?: number;
+  user_question?: string;
   error?: string;
 };
 

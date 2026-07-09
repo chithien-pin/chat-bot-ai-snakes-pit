@@ -12,7 +12,7 @@ from cps_bot.browse.fast_reply import (
 from cps_bot.core.conversation import append_turn, format_context_block, get_session
 from cps_bot.cps.cps_api import enrich_payload_for_scenarios, fetch_product_for_query
 from cps_bot.cps.scraper import build_product_payload
-from cps_bot.llm.gemini_client import extract_search_keywords
+from cps_bot.llm.gemini_client import extract_search_keywords, try_color_follow_up_search_keywords
 
 
 class ColorSiblingReplyTest(unittest.TestCase):
@@ -102,6 +102,34 @@ class ColorSiblingE2ETest(unittest.TestCase):
         answer = asyncio.run(_run())
         for color in ("Xanh Lưu Ly", "Đen", "Hồng", "Trắng", "Xanh Mòng Két"):
             self.assertIn(color, answer, answer)
+
+    def test_color_follow_up_with_full_product_name_reuses_session_keywords(self) -> None:
+        q1 = "Samsung Galaxy A17 5G 8GB 128GB giá bao nhiêu"
+        kw1 = extract_search_keywords(q1, use_llm=False)
+        store: dict = {}
+        session = get_session(store, "chat", "user")
+        append_turn(
+            session,
+            user=q1,
+            assistant="giá",
+            keywords=kw1,
+            product_name="Samsung Galaxy A17 5G 8GB 128GB",
+            product_url="https://cellphones.com.vn/a17.html",
+            product_id="109159",
+            parent_product_id="109100",
+        )
+        ctx = format_context_block(session)
+        q2 = "Samsung Galaxy A17 5G 8GB 128GB có màu nào"
+        self.assertEqual(
+            try_color_follow_up_search_keywords(
+                q2,
+                last_keywords=session["last_keywords"],
+                last_product_name=session["last_product"]["name"],
+                conversation_context=ctx,
+            ),
+            kw1,
+        )
+        self.assertEqual(extract_search_keywords(q2, ctx, use_llm=False), kw1)
 
     def test_ip17_pro_1tb_then_color_list(self) -> None:
         async def _run() -> str:

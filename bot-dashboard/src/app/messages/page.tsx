@@ -33,6 +33,7 @@ function MessageTable({ rows }: { rows: MessageRow[] }) {
         <tr className="border-b border-surface-border bg-surface-muted text-left text-xs uppercase tracking-wide text-text-muted">
           <th className="px-4 py-3">Time</th>
           <th className="px-4 py-3">User</th>
+          <th className="px-4 py-3">Câu hỏi (USER)</th>
           <th className="px-4 py-3">Platform</th>
           <th className="px-4 py-3">Status</th>
           <th className="px-4 py-3">Flags</th>
@@ -53,6 +54,12 @@ function MessageTable({ rows }: { rows: MessageRow[] }) {
             <td className="px-4 py-3 whitespace-nowrap">{fmtTs(r.ts)}</td>
             <td className="max-w-[120px] truncate px-4 py-3 text-xs">
               {userDisplayLabel(r.user_id || "", r.user_name)}
+            </td>
+            <td
+              className="max-w-[240px] truncate px-4 py-3 text-sm text-text-primary"
+              title={r.user_question || undefined}
+            >
+              {r.user_question || "—"}
             </td>
             <td className="px-4 py-3">{r.platform}</td>
             <td className="px-4 py-3">

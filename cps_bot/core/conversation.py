@@ -201,6 +201,21 @@ def clear_session(
     delete_persisted_session(key)
 
 
+def clear_all_sessions_for_chat(
+    store: dict[str, Any],
+    chat_id: int | str,
+) -> int:
+    """Xóa mọi session RAM thuộc một chat (mọi user/topic)."""
+    prefix = f"{chat_id}:"
+    removed = 0
+    for key in list(store.keys()):
+        if key.startswith(prefix):
+            store.pop(key, None)
+            delete_persisted_session(key)
+            removed += 1
+    return removed
+
+
 def _summarize_turn_for_history(
     turn: dict[str, Any],
     *,

@@ -21,14 +21,16 @@ Bot tự động tìm sản phẩm trên [cellphones.com.vn](https://cellphones.
 
 ## 1. Bot làm được gì?
 
-| Tính năng | Mô tả |
-|-----------|--------|
-| Tìm sản phẩm | Tìm theo tên / model trên CellphoneS |
-| Giá & khuyến mãi | Hiển thị giá bán, giá gốc (nếu có) |
-| Thông số kỹ thuật | RAM, chip, màn hình, pin, v.v. |
-| Tình trạng hàng | Còn hàng / tạm hết hàng |
-| Tư vấn AI | Gemini tổng hợp câu trả lời ngắn gọn, tiếng Việt |
-| Link sản phẩm | Nút **🔗 Xem trên Cellphones** dẫn thẳng trang gốc |
+
+| Tính năng         | Mô tả                                              |
+| ----------------- | -------------------------------------------------- |
+| Tìm sản phẩm      | Tìm theo tên / model trên CellphoneS               |
+| Giá & khuyến mãi  | Hiển thị giá bán, giá gốc (nếu có)                 |
+| Thông số kỹ thuật | RAM, chip, màn hình, pin, v.v.                     |
+| Tình trạng hàng   | Còn hàng / tạm hết hàng                            |
+| Tư vấn AI         | Gemini tổng hợp câu trả lời ngắn gọn, tiếng Việt   |
+| Link sản phẩm     | Nút **🔗 Xem trên Cellphones** dẫn thẳng trang gốc |
+
 
 ---
 
@@ -67,18 +69,20 @@ cp .env.example .env
 
 Mở file `.env` và điền các biến sau:
 
-| Biến | Bắt buộc | Mô tả |
-|------|----------|--------|
-| `TELEGRAM_BOT_TOKEN` | Có | Token từ [@BotFather](https://t.me/BotFather) |
-| `GEMINI_API_KEY` | Có | API key từ [Google AI Studio](https://aistudio.google.com/apikey) |
-| `GROUP_CHAT_ID` | Không* | ID group/chat bot được phép trả lời |
-| `CPS_PROVINCE_ID` | Không | Mã tỉnh CellphoneS (mặc định `30` = TP.HCM) |
-| `GEMINI_MODEL` | Không | Model Gemini (mặc định `gemini-3.5-flash`) |
-| `LLM_PROVIDER` | Không | `gemini` (mặc định) hoặc `deepseek` để test |
-| `DEEPSEEK_API_KEY` | Khi dùng DeepSeek | API key DeepSeek |
-| `DEEPSEEK_MODEL` | Không | `deepseek-chat` hoặc `deepseek-reasoner` |
 
-\* Nếu **để trống** `GROUP_CHAT_ID`, bot sẽ trả lời **mọi** chat (tin nhắn riêng hoặc group).
+| Biến                 | Bắt buộc          | Mô tả                                                             |
+| -------------------- | ----------------- | ----------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN` | Có                | Token từ [@BotFather](https://t.me/BotFather)                     |
+| `GEMINI_API_KEY`     | Có                | API key từ [Google AI Studio](https://aistudio.google.com/apikey) |
+| `GROUP_CHAT_ID`      | Không*            | ID group/chat bot được phép trả lời                               |
+| `CPS_PROVINCE_ID`    | Không             | Mã tỉnh CellphoneS (mặc định `30` = TP.HCM)                       |
+| `GEMINI_MODEL`       | Không             | Model Gemini (mặc định `gemini-3.5-flash`)                        |
+| `LLM_PROVIDER`       | Không             | `gemini` (mặc định) hoặc `deepseek` để test                       |
+| `DEEPSEEK_API_KEY`   | Khi dùng DeepSeek | API key DeepSeek                                                  |
+| `DEEPSEEK_MODEL`     | Không             | `deepseek-chat` hoặc `deepseek-reasoner`                          |
+
+
+ Nếu **để trống** `GROUP_CHAT_ID`, bot sẽ trả lời **mọi** chat (tin nhắn riêng hoặc group).
 
 ### Lấy `TELEGRAM_BOT_TOKEN`
 
@@ -107,8 +111,8 @@ Cách 2 — đọc log khi chạy bot (tạm bỏ `GROUP_CHAT_ID` trong `.env`, 
 1. Mở group Telegram cần dùng bot
 2. **Thêm thành viên** → chọn bot của bạn
 3. Nếu bot **không đọc được tin nhắn** trong group:
-   - Mở [@BotFather](https://t.me/BotFather)
-   - `/mybots` → chọn bot → **Bot Settings** → **Group Privacy** → **Turn off**
+  - Mở [@BotFather](https://t.me/BotFather)
+  - `/mybots` → chọn bot → **Bot Settings** → **Group Privacy** → **Turn off**
 
 ---
 
@@ -153,9 +157,9 @@ python scraper.py "iphone 15 pro max"
 1. Mở **group** (hoặc chat riêng) đã cấu hình
 2. Gửi câu hỏi bằng **tiếng Việt**, ví dụ: `iPhone 15 Pro Max giá bao nhiêu?`
 3. Bot phản hồi theo các bước:
-   - `🔍 Đang tìm kiếm thông tin...`
-   - `📦 Đang lấy thông số chi tiết...`
-   - `🤖 Đang phân tích với Gemini AI...`
+  - `🔍 Đang tìm kiếm thông tin...`
+  - `📦 Đang lấy thông số chi tiết...`
+  - `🤖 Đang phân tích với Gemini AI...`
 4. Nhận câu trả lời + nút **🔗 Xem trên Cellphones**
 
 **Lưu ý:**
@@ -168,10 +172,12 @@ python scraper.py "iphone 15 pro max"
 
 ## 6. Lệnh có sẵn
 
-| Lệnh | Chức năng |
-|------|-----------|
-| `/start` | Lời chào và ví dụ câu hỏi |
-| `/help` | Hướng dẫn ngắn trong Telegram |
+
+| Lệnh     | Chức năng                     |
+| -------- | ----------------------------- |
+| `/start` | Lời chào và ví dụ câu hỏi     |
+| `/help`  | Hướng dẫn ngắn trong Telegram |
+
 
 Mọi tin nhắn **không phải lệnh** đều được coi là câu hỏi tư vấn sản phẩm.
 
@@ -217,13 +223,15 @@ Trả lời Telegram (Markdown + nút link)
 
 ### Bot không phản hồi trong group
 
-| Kiểm tra | Cách xử lý |
-|----------|------------|
-| Bot có đang chạy? | Xem terminal / `bot.log` |
-| `GROUP_CHAT_ID` đúng? | So sánh ID group với `.env` |
-| Bot đã vào group? | Thêm lại bot vào group |
-| Privacy Mode | Tắt qua BotFather (mục 3) |
+
+| Kiểm tra                | Cách xử lý                               |
+| ----------------------- | ---------------------------------------- |
+| Bot có đang chạy?       | Xem terminal / `bot.log`                 |
+| `GROUP_CHAT_ID` đúng?   | So sánh ID group với `.env`              |
+| Bot đã vào group?       | Thêm lại bot vào group                   |
+| Privacy Mode            | Tắt qua BotFather (mục 3)                |
 | Bot chỉ trả lời 1 group | Đúng thiết kế nếu đã set `GROUP_CHAT_ID` |
+
 
 ### `RuntimeError: There is no current event loop`
 
@@ -259,22 +267,26 @@ Trả lời Telegram (Markdown + nút link)
 
 ## Cấu trúc mã nguồn (tham khảo)
 
-| File | Vai trò |
-|------|---------|
-| `bot.py` | Chạy bot, xử lý Telegram |
-| `scraper.py` | Tìm & scrape CellphoneS |
-| `gemini_client.py` | Gọi Gemini phân tích |
-| `config.py` | Đọc biến môi trường |
-| `.env` | Token và cấu hình riêng (không commit) |
+
+| File               | Vai trò                                |
+| ------------------ | -------------------------------------- |
+| `bot.py`           | Chạy bot, xử lý Telegram               |
+| `scraper.py`       | Tìm & scrape CellphoneS                |
+| `gemini_client.py` | Gọi Gemini phân tích                   |
+| `config.py`        | Đọc biến môi trường                    |
+| `.env`             | Token và cấu hình riêng (không commit) |
+
 
 ---
 
 ## Hỗ trợ nhanh
 
-| Việc cần làm | Lệnh |
-|--------------|------|
-| Cài lại thư viện | `pip install -r requirements.txt` |
-| Chạy bot | `python bot.py` |
-| Test tìm kiếm | `python scraper.py "tên sản phẩm"` |
+
+| Việc cần làm     | Lệnh                               |
+| ---------------- | ---------------------------------- |
+| Cài lại thư viện | `pip install -r requirements.txt`  |
+| Chạy bot         | `python bot.py`                    |
+| Test tìm kiếm    | `python scraper.py "tên sản phẩm"` |
+
 
 Nếu gặp lỗi, copy **toàn bộ log** trong terminal (từ dòng `ERROR` / `Traceback`) để debug.

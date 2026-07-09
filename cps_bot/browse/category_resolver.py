@@ -36,6 +36,18 @@ _CANONICAL_MENU_ALIASES: dict[str, tuple[str, ...]] = {
         "mobile",
     ),
     "Laptop": ("laptop", "máy tính xách tay", "may tinh xach tay", "notebook", "lap top"),
+    "Laptop Gaming": (
+        "laptop gaming",
+        "gaming laptop",
+        "laptop choi game",
+        "laptop chơi game",
+        "lap top gaming",
+    ),
+    "Laptop Văn phòng": (
+        "laptop van phong",
+        "laptop văn phòng",
+        "laptop lam viec van phong",
+    ),
     "MacBook": ("macbook", "mac book", "máy mac", "may mac"),
     "iPad": ("ipad",),
     "Tivi": ("tivi", "tv", "television"),
@@ -426,6 +438,13 @@ _BRAND_CHILD_MENUS = frozenset({
     "Masstel", "Itel", "TECNO", "Nubia", "MacBook", "iPad",
 })
 
+_LAPTOP_QUERY_RE = re.compile(
+    r"\b(?:laptop|lap top|notebook|may tinh xach tay|máy tính xách tay)\b",
+    re.IGNORECASE,
+)
+# Menu tên chung — khi user nói laptop thì không refine sang nhánh màn hình.
+_MONITOR_AMBIGUOUS_MENUS = frozenset({"Gaming", "Văn phòng", "Đồ họa"})
+
 
 def refine_to_deepest_category_match(text: str, hit: CategoryMatch) -> CategoryMatch:
     """
@@ -484,9 +503,16 @@ def refine_to_deepest_category_match(text: str, hit: CategoryMatch) -> CategoryM
             (menu_name, str(cid), path, row["category_name"], base_score, reason)
         )
 
+    laptop_query = bool(_LAPTOP_QUERY_RE.search(original))
+
     for menu_name, cid, path, cat_name, base_score, reason in candidates:
         if cid == hit.category_id:
             continue
+        if laptop_query and (path or "").startswith("man-hinh/"):
+            if menu_name in _MONITOR_AMBIGUOUS_MENUS:
+                continue
+            if hit.category_id == "380" or (hit.page_path or "").startswith("laptop"):
+                continue
         if "tram-sac-du-phong" in (path or "") and not re.search(
             r"\b(?:trạm|tram)\b", original, re.I
         ):

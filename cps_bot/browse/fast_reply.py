@@ -85,6 +85,197 @@ def can_fast_browse_reply(detail: dict[str, Any], search_results: list[dict[str,
     )
 
 
+_FAST_PRICE_BLOCKING_SCENARIOS = frozenset({
+    "shop_stock",
+    "trade_in",
+    "installment",
+    "warranty",
+    "compare",
+    "specs",
+    "advice",
+    "stock_browse",
+    "budget_browse",
+    "category_filter_browse",
+    "reviews",
+    "faq_policy",
+    "flash_sale",
+    "trade_in_device",
+    "store_locator",
+    "combo",
+    "incoming_stock",
+})
+
+
+def can_fast_price_reply(
+    user_question: str,
+    detail: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    """Chỉ giá/KM 1 SP đã resolve — không shop/trả góp/so sánh/browse list."""
+    from cps_bot.cps.cps_api import classify_question_scenarios
+    from cps_bot.cps.scraper import is_browse_list_mode
+
+    if is_browse_list_mode(detail):
+        return False
+    if payload.get("compare_mode"):
+        return False
+
+    scenarios = classify_question_scenarios(user_question)
+    if not scenarios.get("price_promotion"):
+        return False
+    if any(scenarios.get(key) for key in _FAST_PRICE_BLOCKING_SCENARIOS):
+        return False
+
+    primary = payload.get("primary_product") or detail or {}
+    if not (primary.get("name") or "").strip():
+        return False
+    if not (primary.get("price") or "").strip():
+        return False
+    if not primary.get("product_id"):
+        return False
+    return True
+
+
+def build_price_reply(
+    user_question: str,
+    payload: dict[str, Any],
+    *,
+    response_link_url: str = "",
+) -> str:
+    """Template giá/KM/tồn — không qua LLM."""
+    _ = user_question
+    primary = payload.get("primary_product") or {}
+    name = (primary.get("name") or "Sản phẩm").strip()
+    price = (primary.get("price") or "").strip()
+    old_price = (primary.get("old_price") or "").strip()
+    stock = (primary.get("stock_status") or "").strip()
+
+    lines: list[str] = [f"📱 *{name}*"]
+    if price:
+        lines.append(f"💰 Giá bán: *{price}*")
+    if old_price and old_price != price:
+        lines.append(f"Giá gốc: {old_price}")
+
+    member_prices = primary.get("member_prices") or []
+    if member_prices:
+        lines.append("")
+        lines.append("*Giá thành viên:*")
+        for tier in member_prices[:8]:
+            if not isinstance(tier, dict):
+                continue
+            label = (tier.get("label") or tier.get("tier") or "").strip()
+            val = (tier.get("price_formatted") or tier.get("price") or "").strip()
+            if label and val:
+                lines.append(f"• {label}: {val}")
+
+    promotions = primary.get("promotions") or {}
+    promo_items: list[dict[str, Any]] = []
+    if isinstance(promotions, dict):
+        promo_items.extend(promotions.get("km_chung") or [])
+        promo_items.extend(promotions.get("km_rieng") or [])
+    promo_lines: list[str] = []
+    for promo in promo_items[:4]:
+        if not isinstance(promo, dict):
+            continue
+        desc = (promo.get("description") or "").strip()
+        if desc:
+            promo_lines.append(f"• {desc[:160]}")
+    if promo_lines:
+        lines.append("")
+        lines.append("*Khuyến mãi:*")
+        lines.extend(promo_lines)
+
+    if stock:
+        lines.append("")
+        lines.append(f"Tình trạng: {stock}")
+
+    link = response_link_url or primary.get("url") or ""
+    if link:
+        lines.append("")
+        lines.append(f"🔗 Xem trên CellphoneS: {link}")
+    return "\n".join(lines)
+
+
+_FAST_SHOP_STOCK_BLOCKING_SCENARIOS = frozenset({
+    "trade_in",
+    "installment",
+    "warranty",
+    "compare",
+    "specs",
+    "advice",
+    "reviews",
+    "faq_policy",
+    "flash_sale",
+    "trade_in_device",
+    "store_locator",
+    "combo",
+    "incoming_stock",
+    "budget_browse",
+    "category_filter_browse",
+    "stock_browse",
+    "price_promotion",
+})
+
+
+def can_fast_shop_stock_reply(
+    user_question: str,
+    detail: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    """Câu hỏi tồn cửa hàng thuần — template từ shop_stock, không LLM."""
+    from cps_bot.cps.cps_api import (
+        classify_question_scenarios,
+        is_color_variant_list_query,
+        is_stock_status_browse_query,
+    )
+    from cps_bot.cps.scraper import is_browse_list_mode
+
+    if is_browse_list_mode(detail):
+        return False
+    if payload.get("compare_mode"):
+        return False
+    if is_color_variant_list_query(user_question):
+        return False
+    if is_stock_status_browse_query(user_question):
+        return False
+
+    shop_ctx = payload.get("shop_stock")
+    if not isinstance(shop_ctx, dict):
+        return False
+
+    scenarios = classify_question_scenarios(user_question)
+    if not scenarios.get("shop_stock"):
+        return False
+    if any(scenarios.get(key) for key in _FAST_SHOP_STOCK_BLOCKING_SCENARIOS):
+        return False
+
+    primary = payload.get("primary_product") or detail or {}
+    if not (shop_ctx.get("product_name") or primary.get("name")):
+        return False
+    if not (shop_ctx.get("product_id") or primary.get("product_id")):
+        return False
+    return True
+
+
+def build_shop_stock_reply(
+    user_question: str,
+    payload: dict[str, Any],
+    *,
+    response_link_url: str = "",
+) -> str:
+    """Template tồn cửa hàng — không qua LLM."""
+    from cps_bot.cps.cps_api import format_shop_stock_summary
+
+    _ = user_question
+    shop_ctx = payload.get("shop_stock") or {}
+    summary = format_shop_stock_summary(shop_ctx)
+    primary = payload.get("primary_product") or {}
+    link = response_link_url or primary.get("url") or ""
+    if link and link not in summary:
+        return f"{summary}\n\n🔗 Xem sản phẩm: {link}"
+    return summary
+
+
 def build_browse_list_reply(
     user_question: str,
     detail: dict[str, Any],

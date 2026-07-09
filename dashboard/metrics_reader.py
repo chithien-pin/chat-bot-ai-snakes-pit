@@ -297,6 +297,7 @@ def _message_row(row: dict[str, Any]) -> dict[str, Any]:
         "shop_stock_scenario": bool(row.get("shop_stock_scenario")),
         "shop_stock_trigger": bool(row.get("shop_stock_trigger")),
         "question_len": row.get("question_len"),
+        "user_question": (row.get("user_question") or "")[:500],
         "error": row.get("error") or "",
     }
 

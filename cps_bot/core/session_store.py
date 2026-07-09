@@ -140,6 +140,74 @@ def delete_persisted_session(session_key: str) -> None:
         logger.warning("Không xóa session %s: %s", session_key, exc)
 
 
+def delete_persisted_sessions_for_chat(chat_id: str) -> int:
+    """Xóa mọi session SQLite thuộc một Lark chat_id."""
+    if not SESSION_PERSISTENCE or not chat_id:
+        return 0
+    prefix = f"{chat_id}:"
+    try:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_key LIKE ?",
+            (f"{prefix}%",),
+        ).fetchone()
+        count = int(row[0]) if row else 0
+        conn.execute(
+            "DELETE FROM sessions WHERE session_key LIKE ?",
+            (f"{prefix}%",),
+        )
+        conn.commit()
+        conn.close()
+        return count
+    except Exception as exc:
+        logger.warning("Không xóa sessions chat %s: %s", chat_id, exc)
+        return 0
+
+
+def delete_active_topics_for_chat(chat_id: str) -> int:
+    if not SESSION_PERSISTENCE or not chat_id:
+        return 0
+    prefix = f"{chat_id}:"
+    try:
+        conn = _connect()
+        _ensure_active_topics_table(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM active_topics WHERE scope_key LIKE ?",
+            (f"{prefix}%",),
+        ).fetchone()
+        count = int(row[0]) if row else 0
+        conn.execute(
+            "DELETE FROM active_topics WHERE scope_key LIKE ?",
+            (f"{prefix}%",),
+        )
+        conn.commit()
+        conn.close()
+        return count
+    except Exception as exc:
+        logger.warning("Không xóa active topics chat %s: %s", chat_id, exc)
+        return 0
+
+
+def delete_topic_aliases_for_chat(chat_id: str) -> int:
+    if not SESSION_PERSISTENCE or not chat_id:
+        return 0
+    try:
+        conn = _connect()
+        _ensure_topic_aliases_table(conn)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM topic_aliases WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        count = int(row[0]) if row else 0
+        conn.execute("DELETE FROM topic_aliases WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+        conn.close()
+        return count
+    except Exception as exc:
+        logger.warning("Không xóa topic aliases chat %s: %s", chat_id, exc)
+        return 0
+
+
 def _ensure_active_topics_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """

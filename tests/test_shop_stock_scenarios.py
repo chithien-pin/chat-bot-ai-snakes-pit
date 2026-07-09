@@ -27,6 +27,7 @@ _STOCK_ATTACH_CASES: list[tuple[str, bool, bool, str | None]] = [
     ("màu đen còn hàng q5 không", True, True, "quận 5"),
     ("tồn kho tại quận 3", True, True, "quận 3"),
     ("kiểm tra tồn q1", True, True, "quận 1"),
+    ("Q10 có tồn Galaxy A17", True, True, "quận 10"),
     ("ở quận 10 có không?", True, True, "quận 10"),
     ("gần quận 9 còn hàng không", True, True, "quận 9"),
     # --- Shop + quận ---

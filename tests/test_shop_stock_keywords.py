@@ -102,6 +102,28 @@ def test_ton_kho_tai_quan_10_triggers_shop_stock():
     assert resolve_province_from_text(q) == 30
 
 
+def test_q10_co_ton_galaxy_a17():
+    q = "Q10 có tồn Galaxy A17"
+    from cps_bot.cps.cps_api import (
+        extract_location_hint,
+        is_district_stock_query,
+        is_shop_stock_question,
+        is_stock_availability_query,
+        should_attach_shop_stock,
+        should_skip_scenario_enrich,
+    )
+
+    assert is_shop_stock_question(q)
+    assert is_district_stock_query(q)
+    assert is_stock_availability_query(q)
+    assert should_attach_shop_stock(q)
+    assert needs_shop_stock_keyword_strip(q)
+    assert strip_shop_stock_phrases_for_keywords(q) == "Galaxy A17"
+    assert extract_search_keywords(q, use_llm=False) == "Galaxy A17"
+    assert extract_location_hint(q).lower() == "quận 10"
+    assert should_skip_scenario_enrich(q)
+
+
 def test_follow_up_o_quan_10_co_khong():
     q = "ở quận 10 có không?"
     from cps_bot.cps.cps_api import extract_location_hint, is_district_stock_query

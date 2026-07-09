@@ -1,5 +1,5 @@
 """
-Luồng xử lý tin nhắn chat — dùng chung cho web UI (và có thể tái sử dụng sau này).
+Luồng xử lý tin nhắn chat — dùng chung Web / Lark / Telegram.
 """
 from __future__ import annotations
 
@@ -12,19 +12,34 @@ from typing import Any, Awaitable, Callable
 
 from config import (
     FAST_BROWSE_REPLY,
+    FAST_COMPARE_REPLY,
+    FAST_COMBO_REPLY,
+    FAST_INSTALLMENT_REPLY,
+    FAST_PRICE_REPLY,
+    FAST_SHOP_STOCK_REPLY,
     LLM_MAX_SEARCH_RESULTS,
     LLM_PROVIDER,
     SLIM_LLM_PAYLOAD,
 )
 from cps_bot.browse.budget_browse import is_budget_browse_query
+from cps_bot.browse.combo_reply import build_combo_reply, can_fast_combo_reply
+from cps_bot.browse.compare_reply import build_compare_reply, can_fast_compare_reply
+from cps_bot.browse.installment_reply import (
+    build_installment_reply,
+    can_fast_installment_reply,
+)
 from cps_bot.browse.fast_reply import (
     build_browse_list_reply,
     build_color_sibling_reply,
+    build_price_reply,
+    build_shop_stock_reply,
     can_fast_browse_reply,
     can_fast_color_sibling_reply,
+    can_fast_price_reply,
+    can_fast_shop_stock_reply,
     slim_payload_for_llm,
 )
-from cps_bot.core.api_trace import api_trace_scope, trace_phase
+from cps_bot.core.api_trace import api_trace_scope, merge_api_calls_detail, trace_phase
 from cps_bot.core.conversation import (
     append_turn,
     clear_session,
@@ -46,6 +61,7 @@ from cps_bot.cps.cps_api import (
     is_color_variant_list_query,
     is_stock_status_browse_query,
     should_attach_shop_stock,
+    should_skip_scenario_enrich,
 )
 from cps_bot.cps.scraper import (
     build_product_payload,
@@ -69,9 +85,14 @@ from cps_bot.llm.gemini_client import (
     needs_query_expansion,
     references_prior_product,
     should_reuse_product_identity,
+    try_color_follow_up_search_keywords,
 )
 from cps_bot.llm.message_intent import is_social_message, resolve_message_intent
-from cps_bot.llm.query_router import resolve_pipeline_search_keywords, resolve_query_route
+from cps_bot.llm.query_router import (
+    QueryRoute,
+    resolve_pipeline_search_keywords,
+    resolve_query_route,
+)
 from cps_bot.llm.answer_guard import check_answer_numbers
 
 logger = logging.getLogger(__name__)
@@ -102,6 +123,17 @@ def truncate_reply(text: str, max_len: int = MAX_REPLY_LENGTH) -> str:
     return text[: max_len - len(suffix)] + suffix
 
 
+def _merge_fetch_stats(into: dict[str, Any], sub_stats: dict[str, Any]) -> None:
+    """Gộp stats fetch (compare song song hoặc multi-call)."""
+    for key, val in sub_stats.items():
+        if isinstance(val, int):
+            into[key] = int(into.get(key, 0)) + val
+        elif key == "resolve_source" and val:
+            into[key] = val
+        elif key == "api_calls_detail":
+            merge_api_calls_detail(into, sub_stats)
+
+
 @dataclass
 class ChatPipelineResult:
     reply: str
@@ -112,6 +144,8 @@ class ChatPipelineResult:
     product_id: str = ""
     search_keywords: str = ""
     response_link_url: str = ""
+    compare_products: list[dict[str, Any]] = field(default_factory=list)
+    use_compare_column_layout: bool = False
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -126,12 +160,22 @@ async def _emit_status(callback: StatusCallback | None, text: str) -> None:
 async def process_chat_message(
     user_question: str,
     *,
-    session_id: str,
+    session_id: str = "default",
     user_id: str = "anonymous",
     user_name: str = "",
     on_status: StatusCallback | None = None,
+    platform: str = "web",
+    chat_id: str | None = None,
+    thread_key: str | None = None,
+    session_store: dict[str, Any] | None = None,
+    message_id: str | None = None,
+    max_reply_length: int | None = None,
+    mirror_to_chat_level: bool = True,
+    cache_feedback: bool | None = None,
+    extra_metrics: dict[str, Any] | None = None,
+    error_detail_in_reply: bool = False,
 ) -> ChatPipelineResult:
-    """Xử lý một câu hỏi — luồng giống Telegram/Lark."""
+    """Xử lý một câu hỏi — dùng chung Web / Lark / Telegram."""
     user_question = (user_question or "").strip()
     if not user_question:
         return ChatPipelineResult(
@@ -140,12 +184,20 @@ async def process_chat_message(
             status="empty",
         )
 
-    store = get_web_session_store()
-    chat_id = web_chat_id(session_id)
-    thread_key = None
-    session = get_session(store, chat_id, user_id, thread_key=thread_key)
-    session_key = session_scope_key(chat_id, user_id, thread_key=thread_key)
-    message_id = uuid.uuid4().hex[:16]
+    store = session_store if session_store is not None else get_web_session_store()
+    resolved_chat_id = chat_id if chat_id is not None else web_chat_id(session_id)
+    reply_max = max_reply_length if max_reply_length is not None else MAX_REPLY_LENGTH
+    should_cache_feedback = (
+        cache_feedback
+        if cache_feedback is not None
+        else platform in ("web", "telegram")
+    )
+    msg_id = message_id or uuid.uuid4().hex[:16]
+
+    session = get_session(store, resolved_chat_id, user_id, thread_key=thread_key)
+    session_key = session_scope_key(
+        resolved_chat_id, user_id, thread_key=thread_key
+    )
 
     pending = session.get("pending_disambiguation") or []
     disambig_pick = resolve_disambiguation_choice(user_question, pending) if pending else None
@@ -154,7 +206,9 @@ async def process_chat_message(
         session.pop("pending_disambiguation", None)
         forced_product_url = product_url_from_record(disambig_pick)
 
-    context_session = resolve_session(store, chat_id, user_id, thread_key=thread_key)
+    context_session = resolve_session(
+        store, resolved_chat_id, user_id, thread_key=thread_key
+    )
     conversation_context = format_context_block(context_session)
     social = is_social_message(user_question)
     is_follow_up = (
@@ -178,16 +232,22 @@ async def process_chat_message(
     )
     started = time.perf_counter()
     metric_data: dict[str, object] = {
-        "platform": "web",
-        "chat_id": str(chat_id),
+        "platform": platform,
+        "chat_id": str(resolved_chat_id),
         "user_id": str(user_id or ""),
         "user_name": user_name,
         "is_follow_up": is_follow_up,
         "reuse_product_context": reuse_product_context,
         "reuse_product_identity": reuse_product_identity,
         "question_len": len(user_question),
+        "user_question": user_question[:500],
         "llm_provider": LLM_PROVIDER,
     }
+    if extra_metrics:
+        metric_data.update(extra_metrics)
+
+    def _truncate(text: str) -> str:
+        return truncate_reply(text, max_len=reply_max)
 
     intent = resolve_message_intent(
         user_question,
@@ -216,7 +276,7 @@ async def process_chat_message(
         )
         return ChatPipelineResult(
             reply=intent.reply,
-            message_id=message_id,
+            message_id=msg_id,
             status=str(metric_data["status"]),
             metrics=dict(metric_data),
         )
@@ -246,7 +306,7 @@ async def process_chat_message(
         )
         return ChatPipelineResult(
             reply=province_gate.reply,
-            message_id=message_id,
+            message_id=msg_id,
             status="ask_province",
             metrics=dict(metric_data),
         )
@@ -272,33 +332,55 @@ async def process_chat_message(
         if compare_queries:
             search_keywords = compare_queries[0]
         else:
-            stock_browse = is_stock_status_browse_query(user_question)
-            budget_browse = is_budget_browse_query(user_question)
-            query_route = await asyncio.to_thread(
-                resolve_query_route,
+            session_last_keywords = (context_session.get("last_keywords") or "").strip()
+            color_session_kw = try_color_follow_up_search_keywords(
                 user_question,
+                last_keywords=session_last_keywords,
+                last_product_name=last_product.get("name") or "",
                 conversation_context=kw_context,
             )
-            metric_data["query_route_mode"] = query_route.mode
-            metric_data["query_route_source"] = query_route.source
-            metric_data["query_route_confidence"] = query_route.confidence
-            if query_route.confidence < 0.85:
-                metric_data["low_confidence_route"] = True
+            if color_session_kw:
+                search_keywords = color_session_kw
+                query_route = QueryRoute(
+                    mode="product_search",
+                    search_keywords=color_session_kw,
+                    confidence=0.98,
+                    source="color_follow_up",
+                )
+                metric_data["query_route_mode"] = query_route.mode
+                metric_data["query_route_source"] = query_route.source
+                metric_data["query_route_confidence"] = query_route.confidence
+                metric_data["keyword_source"] = "color_follow_up"
+                stock_browse = False
+                budget_browse = False
+            else:
+                stock_browse = is_stock_status_browse_query(user_question)
+                budget_browse = is_budget_browse_query(user_question)
+                query_route = await asyncio.to_thread(
+                    resolve_query_route,
+                    user_question,
+                    conversation_context=kw_context,
+                )
+                metric_data["query_route_mode"] = query_route.mode
+                metric_data["query_route_source"] = query_route.source
+                metric_data["query_route_confidence"] = query_route.confidence
+                if query_route.confidence < 0.85:
+                    metric_data["low_confidence_route"] = True
 
-            if (
-                needs_query_expansion(user_question)
-                and not stock_browse
-                and not budget_browse
-                and query_route.mode != "category_browse"
-            ):
-                await _emit_status(on_status, "✍️ Đang hiểu câu hỏi của bạn...")
-            search_keywords = await asyncio.to_thread(
-                resolve_pipeline_search_keywords,
-                user_question,
-                query_route,
-                conversation_context=kw_context,
-            )
-            budget_browse = budget_browse or query_route.mode == "budget_browse"
+                if (
+                    needs_query_expansion(user_question)
+                    and not stock_browse
+                    and not budget_browse
+                    and query_route.mode != "category_browse"
+                ):
+                    await _emit_status(on_status, "✍️ Đang hiểu câu hỏi của bạn...")
+                search_keywords = await asyncio.to_thread(
+                    resolve_pipeline_search_keywords,
+                    user_question,
+                    query_route,
+                    conversation_context=kw_context,
+                )
+                budget_browse = budget_browse or query_route.mode == "budget_browse"
         metric_data["latency_keyword_ms"] = int((time.perf_counter() - t0) * 1000)
         stock_browse = is_stock_status_browse_query(user_question)
         budget_browse = is_budget_browse_query(user_question)
@@ -318,7 +400,7 @@ async def process_chat_message(
             )
             return ChatPipelineResult(
                 reply=reply,
-                message_id=message_id,
+                message_id=msg_id,
                 status="keyword_empty",
                 metrics=dict(metric_data),
             )
@@ -349,20 +431,28 @@ async def process_chat_message(
         if compare_queries:
             await _emit_status(on_status, "⚖️ Đang so sánh 2 sản phẩm...")
             fetch_stats: dict[str, Any] = {}
-            for kw in compare_queries[:2]:
-                sub_results, sub_detail, sub_stats = await fetch_product_for_query(
+            compare_kws = compare_queries[:2]
+
+            async def _fetch_compare_side(kw: str) -> tuple[Any, Any, dict[str, Any]]:
+                return await fetch_product_for_query(
                     kw,
                     user_message=user_question,
                 )
-                for key, val in sub_stats.items():
-                    if isinstance(val, int):
-                        fetch_stats[key] = int(fetch_stats.get(key, 0)) + val
-                    elif key == "resolve_source" and val:
-                        fetch_stats[key] = val
-                    elif key == "api_calls_detail":
-                        from cps_bot.core.api_trace import merge_api_calls_detail
 
-                        merge_api_calls_detail(fetch_stats, sub_stats)
+            parallel = await asyncio.gather(
+                *(_fetch_compare_side(kw) for kw in compare_kws),
+                return_exceptions=True,
+            )
+            for idx, item in enumerate(parallel):
+                if isinstance(item, Exception):
+                    logger.warning(
+                        "compare fetch lỗi (%s): %s",
+                        compare_kws[idx],
+                        item,
+                    )
+                    continue
+                _sub_results, sub_detail, sub_stats = item
+                _merge_fetch_stats(fetch_stats, sub_stats)
                 if sub_detail:
                     compare_products.append(sub_detail)
             results = []
@@ -395,7 +485,7 @@ async def process_chat_message(
             )
             return ChatPipelineResult(
                 reply=reply,
-                message_id=message_id,
+                message_id=msg_id,
                 status="compare_not_found",
                 search_keywords=search_keywords,
                 metrics=dict(metric_data),
@@ -430,7 +520,7 @@ async def process_chat_message(
                 )
                 return ChatPipelineResult(
                     reply=reply,
-                    message_id=message_id,
+                    message_id=msg_id,
                     status="not_found",
                     search_keywords=search_keywords,
                     metrics=dict(metric_data),
@@ -483,7 +573,7 @@ async def process_chat_message(
                 reuse_product_context=reuse_product_context,
             )
         )
-        need_enrich = not browse_list
+        need_enrich = not browse_list and not should_skip_scenario_enrich(shop_question)
 
         async def _run_shop_stock() -> tuple[Any, int]:
             t0 = time.perf_counter()
@@ -556,6 +646,52 @@ async def process_chat_message(
             )
             metric_data["fast_color_sibling_reply"] = True
             metric_data["gemini_model"] = "template"
+        elif FAST_COMPARE_REPLY and can_fast_compare_reply(
+            user_question, detail, payload
+        ):
+            answer = build_compare_reply(
+                user_question,
+                payload,
+                response_link_url=response_link_url,
+            )
+            metric_data["fast_compare_reply"] = True
+            metric_data["gemini_model"] = "template"
+        elif FAST_SHOP_STOCK_REPLY and can_fast_shop_stock_reply(
+            user_question, detail, payload
+        ):
+            answer = build_shop_stock_reply(
+                user_question,
+                payload,
+                response_link_url=response_link_url,
+            )
+            metric_data["fast_shop_stock_reply"] = True
+            metric_data["gemini_model"] = "template"
+        elif FAST_INSTALLMENT_REPLY and can_fast_installment_reply(
+            user_question, detail, payload
+        ):
+            answer = build_installment_reply(
+                user_question,
+                payload,
+                response_link_url=response_link_url,
+            )
+            metric_data["fast_installment_reply"] = True
+            metric_data["gemini_model"] = "template"
+        elif FAST_COMBO_REPLY and can_fast_combo_reply(user_question, detail, payload):
+            answer = build_combo_reply(
+                user_question,
+                payload,
+                response_link_url=response_link_url,
+            )
+            metric_data["fast_combo_reply"] = True
+            metric_data["gemini_model"] = "template"
+        elif FAST_PRICE_REPLY and can_fast_price_reply(user_question, detail, payload):
+            answer = build_price_reply(
+                user_question,
+                payload,
+                response_link_url=response_link_url,
+            )
+            metric_data["fast_price_reply"] = True
+            metric_data["gemini_model"] = "template"
         elif FAST_BROWSE_REPLY and can_fast_browse_reply(
             detail, payload.get("search_results") or []
         ):
@@ -602,7 +738,7 @@ async def process_chat_message(
                 user_question[:120],
             )
 
-        answer = truncate_reply(answer)
+        answer = _truncate(answer)
         search_list = payload.get("search_results") or []
         scenarios = payload.get("question_scenarios") or {}
         if should_attach_product_links_appendix(
@@ -611,10 +747,10 @@ async def process_chat_message(
             compare_mode=bool(metric_data.get("compare_mode")),
             ambiguous_search=bool(fetch_stats.get("ambiguous_search")),
             fast_browse_reply=bool(metric_data.get("fast_browse_reply")),
-        ):
+        ) and not metric_data.get("compare_mode"):
             appendix = format_product_links_appendix(search_list)
             if appendix and appendix not in answer:
-                answer = truncate_reply(f"{answer}{appendix}")
+                answer = _truncate(f"{answer}{appendix}")
 
         disambig_msg = (
             build_disambiguation_message(results)
@@ -623,7 +759,7 @@ async def process_chat_message(
             else ""
         )
         if disambig_msg and disambig_msg not in answer:
-            answer = truncate_reply(f"{answer}\n\n{disambig_msg}")
+            answer = _truncate(f"{answer}\n\n{disambig_msg}")
 
         product_name = (
             detail.get("name") or (results[0].get("name") if results else "") or ""
@@ -639,18 +775,20 @@ async def process_chat_message(
             parent_product_id=detail.get("parent_id", ""),
             session_key=session_key,
         )
-        mirror_session_to_chat_level(store, chat_id, user_id, session)
+        if mirror_to_chat_level:
+            mirror_session_to_chat_level(store, resolved_chat_id, user_id, session)
 
-        cache_feedback_context(
-            chat_id=str(chat_id),
-            message_id=message_id,
-            user_question=user_question,
-            bot_answer=answer,
-            search_keywords=search_keywords,
-            product_id=str(detail.get("product_id") or ""),
-            product_name=product_name,
-            product_url=product_url,
-        )
+        if should_cache_feedback:
+            cache_feedback_context(
+                chat_id=str(resolved_chat_id),
+                message_id=msg_id,
+                user_question=user_question,
+                bot_answer=answer,
+                search_keywords=search_keywords,
+                product_id=str(detail.get("product_id") or ""),
+                product_name=product_name,
+                product_url=product_url,
+            )
 
         metric_data["status"] = "success"
         metric_data["search_keywords"] = search_keywords
@@ -663,24 +801,35 @@ async def process_chat_message(
             total_latency_ms=int((time.perf_counter() - started) * 1000),
         )
 
+        compare_result_products = (
+            (payload.get("compare_products") or [])[:2]
+            if payload.get("compare_mode")
+            else []
+        )
+        use_compare_columns = len(compare_result_products) >= 2
+
         return ChatPipelineResult(
             reply=answer,
-            message_id=message_id,
+            message_id=msg_id,
             status="success",
             product_url=product_url,
             product_name=product_name,
             product_id=str(detail.get("product_id") or ""),
             search_keywords=search_keywords,
             response_link_url=response_link_url,
+            compare_products=compare_result_products,
+            use_compare_column_layout=use_compare_columns,
             metrics=dict(metric_data),
         )
 
     except Exception as exc:
-        logger.exception("Web chat pipeline error: %s", exc)
+        logger.exception("%s chat pipeline error: %s", platform, exc)
         friendly = (
             "⚠️ Đã xảy ra lỗi khi xử lý yêu cầu.\n"
             "Vui lòng thử lại sau ít phút."
         )
+        if error_detail_in_reply:
+            friendly = f"{friendly}\n\nChi tiết: {str(exc)[:200]}"
         metric_data["status"] = "error"
         metric_data["error"] = str(exc)[:200]
         emit_metric(
@@ -690,7 +839,7 @@ async def process_chat_message(
         )
         return ChatPipelineResult(
             reply=friendly,
-            message_id=message_id,
+            message_id=msg_id,
             status="error",
             metrics=dict(metric_data),
         )

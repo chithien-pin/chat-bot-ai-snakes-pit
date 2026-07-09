@@ -1,8 +1,8 @@
 {
-  "updated_at": "2026-07-05T09:21:39.825171+00:00",
+  "updated_at": "2026-07-09T07:47:50.935422+00:00",
   "menu_id": 5,
   "link_count": 556,
-  "category_count": 367,
+  "category_count": 369,
   "progress_index": 556,
   "entries": {
     "Điện thoại": "3",
@@ -66,6 +66,8 @@
     "Mỏng nhẹ": "1056",
     "Đồ họa - kỹ thuật": "1055",
     "Sinh viên": "1054",
+    "Laptop Gaming": "380",
+    "Laptop Văn phòng": "380",
     "Cảm ứng": "1219",
     "Laptop AI": "2197",
     "Laptop Core i3": "1548",
@@ -435,6 +437,8 @@
     "Mỏng nhẹ": "laptop/mong-nhe.html",
     "Đồ họa - kỹ thuật": "laptop/do-hoa.html",
     "Sinh viên": "laptop/sinh-vien.html",
+    "Laptop Gaming": "laptop/gaming.html",
+    "Laptop Văn phòng": "laptop/van-phong.html",
     "Cảm ứng": "laptop/cam-ung.html",
     "Laptop AI": "laptop/ai.html",
     "Laptop Core i3": "laptop/core-i3.html",

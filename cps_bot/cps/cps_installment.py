@@ -220,7 +220,10 @@ _PAY_LATER_GENERIC_RE = re.compile(
     re.IGNORECASE,
 )
 _LOWEST_PREPAY_RE = re.compile(
-    r"\b(trả trước|tra truoc|ít nhất|it nhat|thấp nhất|thap nhat)\b",
+    r"\b("
+    r"trả trước|tra truoc|ít nhất|it nhat|thấp nhất|thap nhat|"
+    r"ưu đãi nhất|uu dai nhat|tốt nhất|tot nhat|rẻ nhất|re nhat"
+    r")\b",
     re.IGNORECASE,
 )
 

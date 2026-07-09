@@ -63,6 +63,16 @@ def test_macbook_neo_falls_back_when_llm_swaps_to_air():
     assert "macbook" in kw.lower()
 
 
+def test_price_query_skips_llm_when_local_keywords_clean():
+    q = "giá iphone 17 pro max 1tb"
+    with patch("cps_bot.llm.gemini_client._extract_keywords_via_llm") as mock_llm:
+        mock_llm.return_value = "WRONG LLM KEYWORDS"
+        kw = extract_search_keywords(q, use_llm=True)
+    mock_llm.assert_not_called()
+    assert "iphone 17 pro max 1tb" in kw.lower()
+    assert "wrong" not in kw.lower()
+
+
 def test_installment_question_strips_to_product_keywords():
     kw = extract_search_keywords(
         "Thông tin trả góp MacBook Neo 256GB, gói nào ưu đãi nhất",
