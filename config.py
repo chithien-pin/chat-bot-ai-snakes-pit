@@ -164,6 +164,13 @@ FAST_INSTALLMENT_REPLY = os.getenv("FAST_INSTALLMENT_REPLY", "1").strip().lower(
     "yes",
     "on",
 }
+# Câu trả góp chung — fetch preview OnePay + ví trả sau (song song)
+INSTALLMENT_CHANNEL_PREVIEW = os.getenv("INSTALLMENT_CHANNEL_PREVIEW", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 # Phụ kiện/combo mua kèm 1 SP — template, không LLM phân tích
 FAST_COMBO_REPLY = os.getenv("FAST_COMBO_REPLY", "1").strip().lower() in {
     "1",

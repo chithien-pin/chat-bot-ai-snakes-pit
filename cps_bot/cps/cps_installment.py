@@ -4,6 +4,7 @@ company-installment-quote.js, login.js (guest-token).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -16,6 +17,7 @@ from config import (
     CPS_PAYMENT_VER,
     CPS_PROVINCE_ID,
     CPS_SSO_GUEST_TOKEN_URL,
+    INSTALLMENT_CHANNEL_PREVIEW,
 )
 from cps_bot.cps.cps_api import (
     STOCK_AVAILABLE_PRE_ORDER,
@@ -1042,6 +1044,144 @@ def _parse_credit_card_banks(
     return banks
 
 
+_GENERAL_PAY_LATER_CODES = ("kredivo", "fundiin", "momo_vts")
+
+
+def summarize_zero_fee_by_term(card_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Gom các ngân hàng — mỗi kỳ hạn lấy mức ~tháng thấp nhất (các bank thường gần nhau).
+    """
+    by_term: dict[int, list[int]] = {}
+    for summary in card_summaries or []:
+        if not isinstance(summary, dict):
+            continue
+        for bank in summary.get("banks") or []:
+            if not isinstance(bank, dict):
+                continue
+            for period in bank.get("zero_fee_periods") or []:
+                if not isinstance(period, dict):
+                    continue
+                term = _int_amount(period.get("term_months"))
+                monthly = _int_amount(period.get("monthly_payment"))
+                if term and monthly:
+                    by_term.setdefault(int(term), []).append(monthly)
+
+    rows: list[dict[str, Any]] = []
+    for term in sorted(by_term):
+        values = by_term[term]
+        best = min(values)
+        rows.append(
+            {
+                "term_months": term,
+                "monthly_payment": best,
+                "monthly_payment_formatted": _format_price(best),
+                "bank_count": len(values),
+            }
+        )
+    return rows
+
+
+async def _fetch_general_installment_channels(
+    *,
+    via_card: dict[str, Any],
+    pay_methods: list[dict[str, Any]],
+    hints: dict[str, str],
+    product_id: str | int,
+    province_id: int,
+    company_id: int,
+    card_amount: int,
+    promotion_pack_id: str | None,
+    token: str,
+    onepay_catalog: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch song song OnePay + ví trả sau cho câu hỏi trả góp chung."""
+    method_codes = _resolve_credit_card_method_codes(via_card, hints)
+    onepay_code = method_codes[0] if method_codes else "onepay"
+
+    available_pay = {
+        str(m.get("code") or "").strip().lower()
+        for m in pay_methods
+        if isinstance(m, dict) and m.get("code")
+    }
+    pay_codes = [code for code in _GENERAL_PAY_LATER_CODES if code in available_pay]
+
+    async def _onepay_task() -> list[dict[str, Any]]:
+        try:
+            card_resp = await fetch_online_calculate(
+                onepay_code,
+                product_id=product_id,
+                province_id=province_id,
+                company_id=company_id,
+                amount=card_amount,
+                promotion_pack_id=promotion_pack_id,
+                token=token,
+            )
+            banks = _parse_credit_card_banks(card_resp, catalog=onepay_catalog)
+            if banks:
+                return [
+                    {
+                        "method": onepay_code,
+                        "amount_used": card_amount,
+                        "amount_formatted": _format_price(card_amount),
+                        "banks": banks,
+                    }
+                ]
+        except Exception as exc:
+            logger.warning("general onepay preview lỗi: %s", exc)
+        return []
+
+    async def _pay_later_task(code: str) -> tuple[str, dict[str, Any] | None]:
+        method = next((m for m in pay_methods if m.get("code") == code), None)
+        amount: int | None = None
+        if method and isinstance(method.get("options"), list) and method["options"]:
+            first_opt = method["options"][0]
+            if isinstance(first_opt, dict):
+                amount = _int_amount(first_opt.get("value") or first_opt.get("amount"))
+        if amount is None:
+            amount = card_amount
+        try:
+            resp = await fetch_online_calculate(
+                code,
+                product_id=product_id,
+                province_id=province_id,
+                company_id=company_id,
+                amount=amount,
+                promotion_pack_id=promotion_pack_id,
+                prepaid_percent=0.3 if code == "fundiin" else None,
+                token=token,
+            )
+            if code == "kredivo":
+                terms = _parse_kredivo_terms(resp)
+                if terms:
+                    return code, {"amount_used": amount, "terms": terms}
+            elif isinstance(resp, dict) and resp:
+                return code, {"amount_used": amount, "raw_keys": list(resp.keys())[:10]}
+        except Exception as exc:
+            logger.warning("general pay_later/%s preview lỗi: %s", code, exc)
+        return code, None
+
+    gather_items: list[Any] = [_onepay_task()]
+    gather_items.extend(_pay_later_task(code) for code in pay_codes)
+    results = await asyncio.gather(*gather_items, return_exceptions=True)
+
+    card_summaries: list[dict[str, Any]] = []
+    pay_details: dict[str, Any] = {}
+    for idx, item in enumerate(results):
+        if isinstance(item, Exception):
+            logger.warning("general channel preview lỗi: %s", item)
+            continue
+        if idx == 0:
+            if isinstance(item, list):
+                card_summaries = item
+            continue
+        if isinstance(item, tuple) and len(item) == 2:
+            code, detail = item
+            if detail:
+                pay_details[str(code)] = detail
+
+    return card_summaries, pay_details
+
+
 def _company_calculate_summary(data: dict[str, Any] | None) -> dict[str, Any]:
     if not data:
         return {}
@@ -1307,7 +1447,6 @@ async def fetch_installment_context(
             "Không lấy được bảng trả góp thẻ OnePay cho sản phẩm này — "
             "gợi ý khách xem modal trả góp trên trang sản phẩm."
         )
-    ctx["credit_card"] = card_block
 
     # --- Ví trả sau (Kredivo, Fundiin, Momo…) ---
     via_pay_later = offers.get("via_pay_later") or {}
@@ -1321,42 +1460,72 @@ async def fetch_installment_context(
         ],
     }
 
+    should_fetch_general_channels = (
+        INSTALLMENT_CHANNEL_PREVIEW
+        and fetch_complete
+        and fetch_intent in ("general", "lowest_prepaid")
+        and card_amount
+        and not should_fetch_card
+        and not query_assessment.get("needs_clarification")
+    )
+    pay_details: dict[str, Any] = {}
+    if should_fetch_general_channels:
+        gen_cards, pay_details = await _fetch_general_installment_channels(
+            via_card=via_card,
+            pay_methods=pay_methods,
+            hints=hints,
+            product_id=product_id,
+            province_id=pid_province,
+            company_id=company_id,
+            card_amount=card_amount,
+            promotion_pack_id=promotion_pack_id,
+            token=token,
+            onepay_catalog=onepay_catalog,
+        )
+        card_block["zero_fee_by_bank"] = gen_cards
+        zero_by_term = summarize_zero_fee_by_term(gen_cards)
+        if zero_by_term:
+            card_block["zero_fee_by_term"] = zero_by_term
+            card_block["amount_formatted"] = _format_price(card_amount)
+
+    ctx["credit_card"] = card_block
+
     pay_targets: list[str] = []
     if fetch_complete and fetch_intent == "pay_later_calculate" and hints.get("pay_later"):
         pay_targets.append(hints["pay_later"])
     elif not fetch_complete and fetch_intent == "pay_later_calculate":
         pay_block["awaiting_fields"] = query_assessment.get("missing_fields") or []
 
-    pay_details: dict[str, Any] = {}
-    for code in pay_targets[:3]:
-        method = next((m for m in pay_methods if m.get("code") == code), None)
-        amount: int | None = None
-        if method and isinstance(method.get("options"), list) and method["options"]:
-            first_opt = method["options"][0]
-            if isinstance(first_opt, dict):
-                amount = _int_amount(first_opt.get("value") or first_opt.get("amount"))
-        if amount is None:
-            amount = _int_amount(sale_price)
-        try:
-            resp = await fetch_online_calculate(
-                code,
-                product_id=product_id,
-                province_id=pid_province,
-                company_id=company_id,
-                amount=amount,
-                promotion_pack_id=promotion_pack_id,
-                prepaid_percent=0.3 if code == "fundiin" else None,
-                token=token,
-            )
-            if code == "kredivo":
-                pay_details[code] = {
-                    "amount_used": amount,
-                    "terms": _parse_kredivo_terms(resp),
-                }
-            elif isinstance(resp, dict):
-                pay_details[code] = {"amount_used": amount, "raw_keys": list(resp.keys())[:10]}
-        except Exception as exc:
-            logger.warning("online-calculate/%s lỗi: %s", code, exc)
+    if not pay_details:
+        for code in pay_targets[:3]:
+            method = next((m for m in pay_methods if m.get("code") == code), None)
+            amount: int | None = None
+            if method and isinstance(method.get("options"), list) and method["options"]:
+                first_opt = method["options"][0]
+                if isinstance(first_opt, dict):
+                    amount = _int_amount(first_opt.get("value") or first_opt.get("amount"))
+            if amount is None:
+                amount = _int_amount(sale_price)
+            try:
+                resp = await fetch_online_calculate(
+                    code,
+                    product_id=product_id,
+                    province_id=pid_province,
+                    company_id=company_id,
+                    amount=amount,
+                    promotion_pack_id=promotion_pack_id,
+                    prepaid_percent=0.3 if code == "fundiin" else None,
+                    token=token,
+                )
+                if code == "kredivo":
+                    pay_details[code] = {
+                        "amount_used": amount,
+                        "terms": _parse_kredivo_terms(resp),
+                    }
+                elif isinstance(resp, dict):
+                    pay_details[code] = {"amount_used": amount, "raw_keys": list(resp.keys())[:10]}
+            except Exception as exc:
+                logger.warning("online-calculate/%s lỗi: %s", code, exc)
 
     pay_block["details"] = pay_details
     ctx["pay_later"] = pay_block
