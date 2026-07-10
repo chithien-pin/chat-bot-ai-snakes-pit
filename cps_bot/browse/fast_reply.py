@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cps_bot.cps.scraper import category_browse_url, format_product_links_appendix, product_url_from_record
+from cps_bot.cps.scraper import category_browse_url, product_url_from_record
 
 
 def _color_label_from_name(name: str) -> str:
@@ -14,6 +14,105 @@ def _color_label_from_name(name: str) -> str:
     if "-" in text:
         return text.rsplit("-", 1)[-1].strip()
     return text
+
+
+_COLOR_MEMBER_TIERS: tuple[tuple[str, str], ...] = (
+    ("snew", "S-New"),
+    ("smem", "S-Member"),
+    ("svip", "S-Vip"),
+)
+
+
+def _tier_by_key(member_prices: list[dict[str, Any]], tier_key: str) -> dict[str, Any] | None:
+    for tier in member_prices:
+        if not isinstance(tier, dict):
+            continue
+        if str(tier.get("tier") or "") == tier_key:
+            return tier
+    return None
+
+
+def _best_hssv_member_tier(member_prices: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_val: int | None = None
+    for tier in member_prices:
+        if not isinstance(tier, dict):
+            continue
+        key = str(tier.get("tier") or "")
+        if "_student" not in key and "_teacher" not in key:
+            continue
+        try:
+            val = int(tier.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if best_val is None or val < best_val:
+            best_val = val
+            best = tier
+    return best
+
+
+def _member_discount_suffix(base_value: int | None, tier: dict[str, Any]) -> str:
+    if base_value is None:
+        return ""
+    chiet_khau = tier.get("chiet_khau_formatted") or tier.get("discount_formatted")
+    if chiet_khau:
+        return f" (giảm {chiet_khau})"
+    try:
+        tier_val = int(tier.get("value"))
+    except (TypeError, ValueError):
+        return ""
+    diff = int(base_value) - tier_val
+    if diff <= 0:
+        return ""
+    from cps_bot.cps.scraper import _format_price
+
+    return f" (giảm {_format_price(diff)})"
+
+
+def _format_color_variant_member_prices(
+    member_prices: list[dict[str, Any]],
+    *,
+    base_value: int | None,
+) -> list[str]:
+    """Giá thành viên theo màu — S-New/S-Member/S-Vip + HSSV/Giáo viên rẻ nhất."""
+    if not member_prices:
+        return []
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for tier_key, label in _COLOR_MEMBER_TIERS:
+        tier = _tier_by_key(member_prices, tier_key)
+        if tier and (tier.get("price") or tier.get("value")):
+            rows.append((label, tier))
+
+    hssv = _best_hssv_member_tier(member_prices)
+    if hssv and (hssv.get("price") or hssv.get("value")):
+        rows.append(("HSSV/Giáo viên", hssv))
+
+    if not rows:
+        return []
+
+    cheapest_val: int | None = None
+    cheapest_label = ""
+    for label, tier in rows:
+        try:
+            val = int(tier.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if cheapest_val is None or val < cheapest_val:
+            cheapest_val = val
+            cheapest_label = label
+
+    lines = ["Giá thành viên:"]
+    for label, tier in rows:
+        price = (tier.get("price") or "").strip()
+        if not price:
+            continue
+        suffix = _member_discount_suffix(base_value, tier)
+        cheapest_mark = ""
+        if label == cheapest_label and suffix:
+            cheapest_mark = " — rẻ nhất! 🎓"
+        lines.append(f"- {label}: {price}{suffix}{cheapest_mark}")
+    return lines
 
 
 def can_fast_color_sibling_reply(
@@ -67,6 +166,12 @@ def build_color_sibling_reply(
         if pid and pid == current_id:
             row += " ← màu bạn đang xem"
         lines.append(row)
+        member_lines = _format_color_variant_member_prices(
+            item.get("member_prices") or [],
+            base_value=item.get("price_value"),
+        )
+        if member_lines:
+            lines.extend(member_lines)
 
     link = response_link_url or primary.get("url") or ""
     if link:
@@ -321,6 +426,9 @@ def build_browse_list_reply(
         if stock:
             row += f" ({stock})"
         lines.append(row)
+        url = product_url_from_record(item)
+        if url:
+            lines.append(url)
 
     list_url = response_link_url or detail.get("category_filter_url") or detail.get("url") or ""
     if list_url:
@@ -328,11 +436,7 @@ def build_browse_list_reply(
         lines.append("")
         lines.append(f"🔗 Xem đầy đủ: {full}")
 
-    appendix = format_product_links_appendix(search_results, max_items=8)
-    body = "\n".join(lines)
-    if appendix and appendix not in body:
-        body = f"{body}{appendix}"
-    return body
+    return "\n".join(lines)
 
 
 def slim_payload_for_llm(payload: dict[str, Any], *, max_results: int = 5) -> dict[str, Any]:

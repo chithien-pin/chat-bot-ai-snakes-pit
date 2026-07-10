@@ -54,6 +54,50 @@ class ColorSiblingReplyTest(unittest.TestCase):
         self.assertIn("Hồng", answer)
         self.assertIn("màu bạn đang xem", answer)
 
+    def test_fast_color_reply_includes_member_prices(self) -> None:
+        member_prices = [
+            {"tier": "snew", "label": "S-New", "value": 5890000, "price": "5.890.000₫"},
+            {"tier": "smem", "label": "S-Member", "value": 5861000, "price": "5.861.000₫"},
+            {"tier": "svip", "label": "S-Vip", "value": 5831000, "price": "5.831.000₫"},
+            {
+                "tier": "smem_student",
+                "label": "S-Member (HSSV)",
+                "value": 5595500,
+                "price": "5.595.500₫",
+            },
+        ]
+        payload = {
+            "primary_product": {"name": "Samsung Galaxy A17 5G 8GB 128GB"},
+            "color_sibling_variants": {
+                "count": 2,
+                "current_product_id": "109159",
+                "variants": [
+                    {
+                        "product_id": "109159",
+                        "name": "Samsung Galaxy A17 5G 8GB 128GB-Xanh navy",
+                        "price": "5.890.000₫",
+                        "price_value": 5890000,
+                        "stock_status": "Còn hàng",
+                        "member_prices": member_prices,
+                    },
+                    {
+                        "product_id": "109160",
+                        "name": "Samsung Galaxy A17 5G 8GB 128GB-Xám khói",
+                        "price": "5.890.000₫",
+                        "price_value": 5890000,
+                        "stock_status": "Còn hàng",
+                        "member_prices": member_prices,
+                    },
+                ],
+            },
+        }
+        answer = build_color_sibling_reply("Galaxy A17 5G có màu nào", payload)
+        self.assertIn("Giá thành viên:", answer)
+        self.assertIn("S-Member: 5.861.000₫ (giảm 29.000₫)", answer)
+        self.assertIn("HSSV/Giáo viên: 5.595.500₫", answer)
+        self.assertIn("rẻ nhất! 🎓", answer)
+        self.assertEqual(answer.count("Giá thành viên:"), 2)
+
 
 class ColorSiblingE2ETest(unittest.TestCase):
     def test_ip16_xanh_luu_ly_then_other_colors(self) -> None:

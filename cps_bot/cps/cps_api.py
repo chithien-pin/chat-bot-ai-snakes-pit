@@ -2165,6 +2165,17 @@ def is_color_variant_list_query(text: str) -> bool:
     return bool(_COLOR_VARIANT_LIST_RE.search(text or ""))
 
 
+def strip_color_variant_list_phrases_for_keywords(text: str) -> str:
+    """Bóc cụm hỏi danh sách màu — giữ tên SP cho product map / search."""
+    s = (text or "").strip().rstrip("?").strip()
+    s = _COLOR_VARIANT_LIST_RE.sub(" ", s)
+    s = re.sub(r"^\s*(?:của|cua)\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+(?:của|cua)\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^\s*(?:có|co)\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+(?:không|khong)\s*$", "", s, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def is_color_variant_query(text: str) -> bool:
     """Alias rõ nghĩa — dùng ở enrich, session fallback, fast reply."""
     return is_color_variant_list_query(text)
@@ -2359,10 +2370,12 @@ async def fetch_color_sibling_variants(
                 "product_id": str(general.get("product_id") or ""),
                 "name": name,
                 "price": _format_price(sale_price),
+                "price_value": int(sale_price) if sale_price is not None else None,
                 "stock_status": stock_avail.get("display_status") or "",
                 "stock_available_id": stock_avail.get("stock_available_id"),
                 "stock_quantity": filterable.get("stock"),
                 "url": graphql_product_url(general),
+                "member_prices": _parse_member_prices(filterable.get("prices")),
             }
         )
 
@@ -2407,6 +2420,7 @@ query GetProductsByIds($provinceId: Int!) {{
     filterable {{
       stock_available_id
       price
+      prices
       special_price
       display_price
       thumbnail

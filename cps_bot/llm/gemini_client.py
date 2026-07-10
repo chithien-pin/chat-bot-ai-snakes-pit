@@ -15,9 +15,11 @@ from cps_bot.browse.budget_browse import (
     _extract_category as _budget_category_from_text,
 )
 from cps_bot.cps.cps_api import (
+    is_color_variant_list_query,
     is_stock_status_browse_query,
     merge_follow_up_variant_into_keywords,
     needs_shop_stock_keyword_strip,
+    strip_color_variant_list_phrases_for_keywords,
     strip_shop_stock_phrases_for_keywords,
     strip_stock_browse_phrases_for_keywords,
 )
@@ -1675,6 +1677,15 @@ def extract_search_keywords(
         keywords = strip_stock_browse_phrases_for_keywords(original)
         logger.info("Từ khóa (stock browse): %r → %r", original, keywords)
         return keywords
+
+    if is_color_variant_list_query(original):
+        keywords = strip_color_variant_list_phrases_for_keywords(original)
+        keywords = _normalize_keyword_line(
+            _strip_search_noise(_replace_abbrev_tokens(keywords))
+        ) if keywords else keywords
+        if keywords:
+            logger.info("Từ khóa (color list): %r → %r", original, keywords)
+            return keywords
 
     from cps_bot.cps.cps_api import is_combo_accessory_query
 
